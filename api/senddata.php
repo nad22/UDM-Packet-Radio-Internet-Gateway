@@ -1,6 +1,5 @@
 <?php
 require_once __DIR__ . '/../db.php';
-require_once __DIR__ . '/AX25Parser.php';
 
 // Empfange Daten vom Client
 $callsign = $_POST['callsign'] ?? '';

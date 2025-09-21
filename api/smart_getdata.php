@@ -1,9 +1,11 @@
 <?php
 require_once __DIR__ . '/../db.php';
+require_once __DIR__ . '/broadcast_manager.php';
 
 /**
  * Smart-Polling-API für ESP32 Clients
  * Liefert Daten + intelligente Polling-Intervall-Anweisungen
+ * Automatische Broadcasts alle 30 Sekunden
  */
 
 header('Content-Type: application/json');
@@ -20,6 +22,20 @@ if (empty($callsign)) {
 
 try {
     global $mysqli;
+    
+    // **AUTOMATISCHER 30-SEKUNDEN BROADCAST**
+    try {
+        error_log("[DEBUG] Starte Broadcast-Prüfung...");
+        $broadcaster = new BroadcastManager($mysqli);
+        $broadcastSent = $broadcaster->checkAndSendBroadcast();
+        if ($broadcastSent) {
+            error_log("[AUTO-BROADCAST] 30s Broadcast gesendet");
+        } else {
+            error_log("[DEBUG] Kein Broadcast nötig (noch nicht 30s vergangen)");
+        }
+    } catch (Exception $broadcastError) {
+        error_log("[AUTO-BROADCAST] Fehler: " . $broadcastError->getMessage());
+    }
     
     // Authentifizierung prüfen
     $stmt = $mysqli->prepare("SELECT status FROM clients WHERE callsign = ?");
