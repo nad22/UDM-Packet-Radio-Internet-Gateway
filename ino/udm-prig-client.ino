@@ -10,7 +10,7 @@
 #include <Update.h>
 #include <HTTPUpdate.h>
 
-#define EEPROM_SIZE 201
+#define EEPROM_SIZE 345
 #define SSID_OFFSET 0
 #define PASS_OFFSET 64
 #define SERVERURL_OFFSET 128
@@ -18,6 +18,8 @@
 #define PORT_OFFSET 192
 #define BAUD_OFFSET 194
 #define LOGLEVEL_OFFSET 198
+#define OTAURL_OFFSET 200
+#define VERSION_OFFSET 328
 
 #define LED_PIN 2
 
@@ -46,6 +48,7 @@ char wifiSsid[64] = "";
 char wifiPass[64] = "";
 char serverUrl[64] = ""; // z.B. "http://192.168.1.10/udmprig-server"
 char callsign[32] = "";
+char otaRepoUrl[128] = "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota";
 uint16_t serverPort = 80;
 uint32_t baudrate = 2400;
 uint8_t logLevel = 1;
@@ -65,10 +68,8 @@ const long  gmtOffset_sec = 3600;
 const int   daylightOffset_sec = 3600;
 
 // OTA
-String localVersion = "1.0.0";
+char localVersion[16] = "1.0.1";
 bool otaCheckedThisSession = false;
-// GitHub OTA Repository (anpassen für Ihr Repository)
-String otaRepoUrl = "https://raw.githubusercontent.com/YOUR-USERNAME/YOUR-REPO/main/ota";
 
 void appendMonitor(const String& msg, const char* level = "INFO");
 String getTimestamp();
@@ -194,6 +195,8 @@ void saveConfig() {
   for (int i = 0; i < 64; ++i) EEPROM.write(PASS_OFFSET+i, wifiPass[i]);
   for (int i = 0; i < 64; ++i) EEPROM.write(SERVERURL_OFFSET+i, serverUrl[i]);
   for (int i = 0; i < 32; ++i) EEPROM.write(CALLSIGN_OFFSET+i, callsign[i]);
+  for (int i = 0; i < 128; ++i) EEPROM.write(OTAURL_OFFSET+i, otaRepoUrl[i]);
+  for (int i = 0; i < 16; ++i) EEPROM.write(VERSION_OFFSET+i, localVersion[i]);
   EEPROM.write(PORT_OFFSET, (serverPort >> 8) & 0xFF);
   EEPROM.write(PORT_OFFSET+1, serverPort & 0xFF);
   EEPROM.write(BAUD_OFFSET, (baudrate >> 24) & 0xFF);
@@ -214,6 +217,10 @@ void loadConfig() {
   serverUrl[63] = 0;
   for (int i = 0; i < 32; ++i) callsign[i] = EEPROM.read(CALLSIGN_OFFSET+i);
   callsign[31] = 0;
+  for (int i = 0; i < 128; ++i) otaRepoUrl[i] = EEPROM.read(OTAURL_OFFSET+i);
+  otaRepoUrl[127] = 0;
+  for (int i = 0; i < 16; ++i) localVersion[i] = EEPROM.read(VERSION_OFFSET+i);
+  localVersion[15] = 0;
   serverPort = (EEPROM.read(PORT_OFFSET) << 8) | EEPROM.read(PORT_OFFSET+1);
   baudrate = ((uint32_t)EEPROM.read(BAUD_OFFSET) << 24)
            | ((uint32_t)EEPROM.read(BAUD_OFFSET+1) << 16)
@@ -231,6 +238,15 @@ void loadConfig() {
   if(logLevel > 3) logLevel = 1;
   if(strlen(wifiSsid) == 0) appendMonitor("WLAN SSID ist leer!", "WARNING");
   if(strlen(serverUrl) == 0) appendMonitor("Server URL ist leer!", "WARNING");
+  if(strlen(otaRepoUrl) == 0) {
+    strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
+    appendMonitor("OTA URL war leer, Standard gesetzt", "WARNING");
+  }
+  if(strlen(localVersion) == 0 || localVersion[0] == 0xFF) {
+    strcpy(localVersion, "1.0.1");
+    appendMonitor("Version war leer, Standard gesetzt: " + String(localVersion), "WARNING");
+    saveConfig(); // Speichere Standard-Version
+  }
 }
 
 void handleRoot() {
@@ -300,6 +316,13 @@ void handleRoot() {
           <label for="callsign" class="active">Callsign</label>
         </div>
         <div class="input-field custom-row">
+          <input id="otarepourl" name="otarepourl" type="url" maxlength="127" value=")=====";
+  html += String(otaRepoUrl);
+  html += R"=====(">
+          <label for="otarepourl" class="active">OTA Repository URL</label>
+          <span class="helper-text">GitHub Raw URL für Firmware-Updates</span>
+        </div>
+        <div class="input-field custom-row">
           <select id="baudrate" name="baudrate">
   )=====";
   uint32_t rates[] = {1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200};
@@ -344,10 +367,10 @@ void handleRoot() {
       <div class="card">
         <div class="card-content">
           <p><strong>Aktuelle Version:</strong> )=====";
-  html += localVersion;
+  html += String(localVersion);
   html += R"=====(</p>
           <p><strong>OTA Repository:</strong><br><small>)=====";
-  html += otaRepoUrl;
+  html += String(otaRepoUrl);
   html += R"=====(</small></p>
           <button class="btn blue" onclick="checkOTAUpdate()">Nach Updates suchen</button>
           <div id="otaStatus" style="margin-top: 10px;"></div>
@@ -510,10 +533,11 @@ void handleSave() {
   if (server.hasArg("pass")) strncpy(wifiPass, server.arg("pass").c_str(), 63);
   if (server.hasArg("serverurl")) strncpy(serverUrl, server.arg("serverurl").c_str(), 63);
   if (server.hasArg("callsign")) strncpy(callsign, server.arg("callsign").c_str(), 31);
+  if (server.hasArg("otarepourl")) strncpy(otaRepoUrl, server.arg("otarepourl").c_str(), 127);
   if (server.hasArg("serverport")) serverPort = server.arg("serverport").toInt();
   if (server.hasArg("baudrate")) baudrate = server.arg("baudrate").toInt();
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
-  wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0;
+  wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
   server.sendHeader("Location", "/", true);
@@ -597,8 +621,8 @@ void checkForUpdates() {
   otaCheckedThisSession = true;
   
   // GitHub OTA URLs verwenden (unabhängig von serverUrl)
-  String urlVersion = otaRepoUrl + "/version.txt";
-  String urlFirmware = otaRepoUrl + "/UDMPRG-Client.ino.bin";
+  String urlVersion = String(otaRepoUrl) + "/version.txt";
+  String urlFirmware = String(otaRepoUrl) + "/udm-prig-client.ino.esp32.bin";
 
   appendMonitor("OTA: Prüfe auf neue Firmware unter " + urlVersion, "INFO");
   HTTPClient http;
@@ -607,8 +631,8 @@ void checkForUpdates() {
   if(httpCode == 200) {
     String remoteVersion = http.getString();
     remoteVersion.trim();
-    appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + localVersion, "DEBUG");
-    if(remoteVersion != localVersion) {
+    appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
+    if(remoteVersion != String(localVersion)) {
       appendMonitor("OTA: Neue Version gefunden (" + remoteVersion + "), Update wird geladen!", "INFO");
       showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
 
@@ -642,6 +666,11 @@ void checkForUpdates() {
             if(Update.end(true)) {
               showOTAUpdateScreen("Update abgeschlossen!", 1.0);
               appendMonitor("OTA-Update erfolgreich! Neustart...", "INFO");
+              // Speichere neue Version im EEPROM
+              strncpy(localVersion, remoteVersion.c_str(), 15);
+              localVersion[15] = 0;
+              saveConfig();
+              appendMonitor("Neue Version gespeichert: " + String(localVersion), "INFO");
               delay(2000);
               ESP.restart();
             } else {
@@ -1036,13 +1065,13 @@ void handleOTACheck() {
     String remoteVersion = http.getString();
     remoteVersion.trim();
     
-    appendMonitor("OTA: Remote version: " + remoteVersion + ", Local version: " + localVersion, "INFO");
+    appendMonitor("OTA: Remote version: " + remoteVersion + ", Local version: " + String(localVersion), "INFO");
     
-    bool updateAvailable = (remoteVersion != localVersion);
+    bool updateAvailable = (remoteVersion != String(localVersion));
     
     String response = "{\"updateAvailable\":" + String(updateAvailable ? "true" : "false") + 
                       ",\"remoteVersion\":\"" + remoteVersion + 
-                      "\",\"localVersion\":\"" + localVersion + "\"}";
+                      "\",\"localVersion\":\"" + String(localVersion) + "\"}";
     
     server.send(200, "application/json", response);
   } else {
@@ -1073,7 +1102,7 @@ void handleOTAUpdate() {
   remoteVersion.trim();
   http.end();
   
-  if (remoteVersion == localVersion) {
+  if (remoteVersion == String(localVersion)) {
     appendMonitor("OTA: No update needed. Versions match.", "INFO");
     server.send(200, "application/json", "{\"result\":\"No update needed\"}");
     return;
@@ -1104,6 +1133,11 @@ void handleOTAUpdate() {
     case HTTP_UPDATE_OK:
       appendMonitor("OTA: Update successful! Restarting...", "INFO");
       server.send(200, "application/json", "{\"result\":\"Update successful\"}");
+      // Speichere neue Version im EEPROM
+      strncpy(localVersion, remoteVersion.c_str(), 15);
+      localVersion[15] = 0;
+      saveConfig();
+      appendMonitor("Neue Version gespeichert: " + String(localVersion), "INFO");
       ESP.restart();
       break;
   }
