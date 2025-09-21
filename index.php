@@ -116,7 +116,7 @@ td {vertical-align:middle;}
           <button class="btn green" onclick="sendSmartTestFrame()">Smart Broadcast</button>
         </div>
       </div>
-      <p class="grey-text">Sends: fm PRGSRV to UDM ctl UI^ pid F0 [your message]</p>
+      <p class="grey-text">Sends: fm PRGSRV to CQ ctl UI^ pid F0 [your message]</p>
       <p class="blue-text"><strong>Smart-Polling:</strong> Nachrichten kommen in 2-10 Sekunden an!</p>
     </div>
   </div>
@@ -124,7 +124,7 @@ td {vertical-align:middle;}
   <!-- Smart-Polling Status -->
   <div class="card" style="margin-top: 20px;">
     <div class="card-content">
-      <span class="card-title">Smart-Polling Status (Hoststar-kompatibel)</span>
+      <span class="card-title">Smart-Polling Status</span>
       <div class="row">
         <div class="col s6">
           <p><strong>System:</strong> <span class="green-text">Smart-Polling aktiv</span></p>
@@ -134,17 +134,7 @@ td {vertical-align:middle;}
         </div>
         <div class="col s6">
           <button class="btn blue" onclick="checkSmartStatus()">Status Aktualisieren</button>
-          <button class="btn orange" onclick="showSmartInfo()">Info</button>
         </div>
-      </div>
-      <div style="margin-top: 10px;">
-        <p><strong>Funktionsweise:</strong></p>
-        <ul style="margin-left: 20px;">
-          <li>Normal: ESP32 prüft alle 10 Sekunden</li>
-          <li>Nach Broadcast: 2-3 Sekunden für 30s</li>
-          <li>100% Hoststar-kompatibel</li>
-          <li>DB-basierte Notifications</li>
-        </ul>
       </div>
     </div>
   </div>
@@ -305,20 +295,6 @@ function checkSmartStatus() {
       console.error('Status check error:', error);
       M.toast({html: 'Fehler beim Status-Check', classes: 'red'});
     });
-}
-
-function showSmartInfo() {
-  M.toast({
-    html: `
-      <strong>Smart-Polling Info:</strong><br>
-      • DB-basierte Notifications<br>
-      • Adaptive Polling-Intervalle<br>
-      • 100% Hoststar-kompatibel<br>
-      • Nachrichten in 2-10 Sekunden
-    `, 
-    classes: 'blue', 
-    displayLength: 8000
-  });
 }
 
 // Lade Monitor und Status beim Start
