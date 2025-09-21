@@ -71,6 +71,7 @@ void appendMonitor(const String& msg, const char* level = "INFO");
 String getTimestamp();
 void blinkLED();
 String decodeBase64Simple(String input); // Forward-Deklaration für Smart-Polling
+String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodierung
 
 void bootPrint(const String &msg) {
   static int line = 0;
@@ -627,6 +628,16 @@ String getTimestamp() {
 }
 
 void appendMonitor(const String& msg, const char* level) {
+  // Log-Level-Filterung
+  int msgLevel = 1; // Standard: INFO
+  if (strcmp(level, "ERROR") == 0) msgLevel = 0;
+  else if (strcmp(level, "INFO") == 0) msgLevel = 1;
+  else if (strcmp(level, "WARNING") == 0) msgLevel = 2;
+  else if (strcmp(level, "DEBUG") == 0) msgLevel = 3;
+  
+  // Nur anzeigen, wenn das aktuelle logLevel >= msgLevel ist
+  if (logLevel < msgLevel) return;
+  
   String line = "[";
   line += getTimestamp();
   line += "] [";
@@ -767,12 +778,22 @@ void loop() {
               // Dekodiere Base64-Daten
               String decodedData = decodeBase64Simple(base64Data);
               if (decodedData.length() > 0) {
+                // Debug: HEX-Anzeige der Rohdaten
+                String hexData = "";
+                for (int i = 0; i < decodedData.length(); i++) {
+                  char hex[3];
+                  sprintf(hex, "%02X", (unsigned char)decodedData[i]);
+                  hexData += hex;
+                  if (i < decodedData.length() - 1) hexData += " ";
+                }
+                appendMonitor("[SMART] RAW HEX: " + hexData, "DEBUG");
+                
                 // RS232 ausgeben (bereits mit korrekten Zeilenendezeichen vom Server)
                 RS232.print(decodedData);
                 RS232.flush(); // Sicherstellen dass Daten gesendet werden
                 lastRX = millis();
                 appendMonitor("[SMART] Empfangen: " + String(decodedData.length()) + " bytes", "INFO");
-                appendMonitor("[SMART] RS232 TX: " + decodedData, "DEBUG");
+                appendMonitor("[SMART] KISS: " + decodeKissFrame(decodedData), "DEBUG");
               }
             }
           }
@@ -786,10 +807,11 @@ void loop() {
           if (pollEnd == -1) pollEnd = response.indexOf("}", pollStart);
           
           if (pollEnd > pollStart) {
-            int nextPollSeconds = response.substring(pollStart, pollEnd).toInt();
-            if (nextPollSeconds > 0 && nextPollSeconds <= 2) { // Max 2 Sekunden
-              smartPollInterval = max(nextPollSeconds * 1000, 500UL); // Min 0.5s, Max 2s
-              appendMonitor("[SMART] Nächstes Poll: " + String(nextPollSeconds) + "s", "DEBUG");
+            String pollString = response.substring(pollStart, pollEnd);
+            float nextPollSecondsFloat = pollString.toFloat();
+            if (nextPollSecondsFloat > 0.0 && nextPollSecondsFloat <= 2.0) { // Max 2 Sekunden
+              smartPollInterval = max((unsigned long)(nextPollSecondsFloat * 1000), 500UL); // Min 0.5s, Max 2s
+              appendMonitor("[SMART] Nächstes Poll: " + String(nextPollSecondsFloat, 1) + "s", "DEBUG");
             }
           }
         }
@@ -827,6 +849,58 @@ void blinkLED() {
     digitalWrite(LED_PIN, ledState ? HIGH : LOW);
     lastBlink = now;
   }
+}
+
+// KISS-Frame-Dekodierung für Debug-Anzeige
+String decodeKissFrame(String rawData) {
+  if (rawData.length() < 3) return "Invalid KISS frame";
+  
+  String result = "";
+  int pos = 0;
+  
+  // KISS-Header prüfen
+  if ((unsigned char)rawData[0] == 0xC0 && (unsigned char)rawData[1] == 0x00) {
+    result += "KISS: ";
+    pos = 2; // Skip KISS header
+  }
+  
+  // AX25-Header dekodieren
+  if (rawData.length() >= pos + 14) {
+    // Destination (6 bytes)
+    String dest = "";
+    for (int i = 0; i < 6; i++) {
+      char c = ((unsigned char)rawData[pos + i]) >> 1;
+      if (c != ' ') dest += c;
+    }
+    pos += 7; // Skip destination + SSID
+    
+    // Source (6 bytes)  
+    String src = "";
+    for (int i = 0; i < 6; i++) {
+      char c = ((unsigned char)rawData[pos + i]) >> 1;
+      if (c != ' ') src += c;
+    }
+    pos += 7; // Skip source + SSID
+    
+    result += src + ">" + dest + ": ";
+    
+    // Control + PID überspringen
+    pos += 2;
+    
+    // Information field (bis zum Ende oder CR)
+    String info = "";
+    while (pos < rawData.length()) {
+      char c = rawData[pos];
+      if (c == 0x0D || c == (char)0xC0) break; // Stop bei CR oder KISS-Ende
+      if (c >= 32 && c <= 126) info += c; // Nur druckbare Zeichen
+      pos++;
+    }
+    result += info;
+  } else {
+    result += "Short frame";
+  }
+  
+  return result;
 }
 
 // Base64-Dekodierung für Smart-Polling (korrekte Implementierung)

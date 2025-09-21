@@ -43,7 +43,7 @@ try {
     // Standard-Response aufbauen
     $response = [
         'data' => '',
-        'next_poll_seconds' => 2, // Ultra-fast: 2s baseline
+        'next_poll_seconds' => 2.0, // Ultra-fast: 2s baseline
         'notifications_count' => 0,
         'has_data' => false,
         'timestamp' => time()
@@ -75,7 +75,7 @@ try {
         
         $response['data'] = base64_encode($allData);
         $response['has_data'] = true;
-        $response['next_poll_seconds'] = 1; // Ultra-fast: 1s after receiving data
+        $response['next_poll_seconds'] = 0.5; // Ultra-fast: 0.5s after receiving data
         
         // Markiere Notifications als zugestellt
         if (!empty($notificationIds)) {
