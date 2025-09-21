@@ -116,11 +116,27 @@ class BroadcastManager {
     
     private function queueMessageForClient($callsign, $message) {
         try {
+            // Prüfe ob Client aktiv ist (status = 1) - wie beim echten Funk!
+            $stmt = $this->mysqli->prepare("SELECT status FROM clients WHERE callsign = ?");
+            $stmt->bind_param("s", $callsign);
+            $stmt->execute();
+            $result = $stmt->get_result();
+            $row = $result->fetch_assoc();
+            $stmt->close();
+            
+            if (!$row || $row['status'] != 1) {
+                // Client ist offline/inaktiv - verpasst die Nachricht (wie beim echten Funk!)
+                error_log("[BROADCAST] Client $callsign ist offline - Nachricht verpasst! 📻");
+                return;
+            }
+            
+            // Client ist aktiv - Nachricht wird zugestellt
             $timestamp = date('Y-m-d H:i:s');
             $stmt = $this->mysqli->prepare("INSERT INTO notifications (callsign, message, created_at) VALUES (?, ?, ?)");
             $stmt->bind_param("sss", $callsign, $message, $timestamp);
             $stmt->execute();
             $stmt->close();
+            
         } catch (Exception $e) {
             error_log("[BROADCAST] Fehler beim Queuen für $callsign: " . $e->getMessage());
         }

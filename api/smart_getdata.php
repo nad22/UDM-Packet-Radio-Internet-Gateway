@@ -23,15 +23,12 @@ if (empty($callsign)) {
 try {
     global $mysqli;
     
-    // **AUTOMATISCHER 30-SEKUNDEN BROADCAST**
+    // **AUTOMATISCHER 5-MINUTEN BROADCAST**
     try {
-        error_log("[DEBUG] Starte Broadcast-Prüfung...");
         $broadcaster = new BroadcastManager($mysqli);
         $broadcastSent = $broadcaster->checkAndSendBroadcast();
         if ($broadcastSent) {
-            error_log("[AUTO-BROADCAST] 30s Broadcast gesendet");
-        } else {
-            error_log("[DEBUG] Kein Broadcast nötig (noch nicht 30s vergangen)");
+            error_log("[AUTO-BROADCAST] 5-Minuten Broadcast gesendet");
         }
     } catch (Exception $broadcastError) {
         error_log("[AUTO-BROADCAST] Fehler: " . $broadcastError->getMessage());
