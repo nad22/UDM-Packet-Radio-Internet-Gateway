@@ -9,7 +9,10 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <HTTPUpdate.h>
+#include <esp_task_wdt.h>
 
+// Watchdog-Timer Konfiguration
+#define WDT_TIMEOUT 30  // 30 Sekunden Watchdog-Timeout
 #define EEPROM_SIZE 345
 #define SSID_OFFSET 0
 #define PASS_OFFSET 64
@@ -68,8 +71,13 @@ const long  gmtOffset_sec = 3600;
 const int   daylightOffset_sec = 3600;
 
 // OTA
-char localVersion[16] = "1.0.1";
+char localVersion[16] = "1.0.2"; // STABILE VERSION mit I2C-Optimierung
 bool otaCheckedThisSession = false;
+
+// Anti-Freeze Protection - STABILE VERSION
+unsigned long lastWatchdogReset = 0;
+unsigned long lastMemoryCheck = 0;
+const unsigned long MEMORY_CHECK_INTERVAL = 60000; // 60 Sekunden (weniger häufig)
 
 void appendMonitor(const String& msg, const char* level = "INFO");
 String getTimestamp();
@@ -739,14 +747,20 @@ void appendMonitor(const String& msg, const char* level) {
   // Nur anzeigen, wenn das aktuelle logLevel >= msgLevel ist
   if (logLevel < msgLevel) return;
   
-  String line = "[";
+  // Memory-effiziente String-Operation mit Reservierung
+  String line;
+  line.reserve(msg.length() + 50); // Reserviere ausreichend Speicher
+  line += "[";
   line += getTimestamp();
   line += "] [";
   line += level;
   line += "] ";
   line += msg;
   line += "\n";
+  
   monitorBuf += line;
+  
+  // Buffer-Größe überwachen und bei Bedarf kürzen
   if (monitorBuf.length() > MONITOR_BUF_SIZE) {
     monitorBuf = monitorBuf.substring(monitorBuf.length() - MONITOR_BUF_SIZE);
   }
@@ -808,13 +822,64 @@ void setup() {
   }
   appendMonitor("Check for Firmware Updates...", "INFO");
   checkForUpdates(); // OTA-Check!
+  
+  appendMonitor("Setup abgeschlossen - Client startet normal", "INFO");
+  
+  // **STABILE VERSION: Hardware Watchdog aktivieren (ESP32 5.x kompatibel)**
+  esp_task_wdt_deinit(); // Eventuellen alten Watchdog zurücksetzen
+  
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = WDT_TIMEOUT * 1000,
+    .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+    .trigger_panic = true
+  };
+  
+  esp_err_t result = esp_task_wdt_init(&wdt_config);
+  if (result == ESP_OK) {
+    result = esp_task_wdt_add(NULL);
+    if (result == ESP_OK) {
+      appendMonitor("Hardware Watchdog aktiviert (30s timeout)", "INFO");
+      lastWatchdogReset = millis();
+    } else {
+      appendMonitor("Watchdog Task-Add fehlgeschlagen, Code: " + String(result), "WARNING");
+    }
+  } else {
+    appendMonitor("Watchdog Init fehlgeschlagen, Code: " + String(result) + " - System läuft ohne Watchdog", "WARNING");
+  }
+  
+  delay(1000); // Kurz warten nach Watchdog-Aktivierung
 }
 
 void loop() {
+  // **STABILE VERSION: Hardware Watchdog Reset alle 3 Sekunden**
+  unsigned long now = millis();
+  
+  if (now - lastWatchdogReset > 3000) { // Alle 3 Sekunden
+    esp_task_wdt_reset(); // Nur wenn Watchdog aktiv ist
+    lastWatchdogReset = now;
+  }
+  
+  // **OPTIMIERT: Memory-Überwachung (weniger häufig)**
+  if (now - lastMemoryCheck > MEMORY_CHECK_INTERVAL) {
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t minHeap = ESP.getMinFreeHeap();
+    size_t stackFree = uxTaskGetStackHighWaterMark(NULL);
+    unsigned long uptimeSeconds = millis() / 1000;
+    
+    appendMonitor("System OK - Heap:" + String(freeHeap) + "B Stack:" + String(stackFree) + " Uptime:" + String(uptimeSeconds) + "s", "INFO");
+    
+    if (freeHeap < 10000) { // Unter 10KB freier Speicher
+      appendMonitor("KRITISCH: Wenig freier Speicher! Neustart wird eingeleitet.", "ERROR");
+      delay(1000);
+      ESP.restart();
+    }
+    lastMemoryCheck = now;
+  }
+  
   server.handleClient();
 
   static unsigned long lastOled = 0;
-  if (millis() - lastOled > 50) {
+  if (millis() - lastOled > 500) { // **OPTIMIERT: 500ms Intervall für Stabilität**
     updateOLED();
     lastOled = millis();
   }
@@ -822,18 +887,31 @@ void loop() {
   // Senden: RS232 -> HTTP POST zum Server
   if (RS232.available()) {
     String sdata = "";
+    sdata.reserve(256); // Reserviere Speicher für bessere Performance
+    
     while (RS232.available()) {
       char c = RS232.read();
       sdata += c;
       lastTX = millis();
     }
+    
     if(sdata.length() > 0 && strlen(serverUrl) > 0) {
       HTTPClient http;
+      
+      // **OPTIMIERT: HTTP-Timeouts für Stabilität**
+      http.setTimeout(5000); // 5 Sekunden Timeout
+      http.setConnectTimeout(3000); // 3 Sekunden Connect-Timeout
+      
       String url = String(serverUrl) + "/api/senddata.php";
       http.begin(url);
       http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-      String postData = "callsign=" + String(callsign) + "&data=" + sdata;
+      
+      String postData;
+      postData.reserve(sdata.length() + 50);
+      postData = "callsign=" + String(callsign) + "&data=" + sdata;
+      
       int httpCode = http.POST(postData);
+      
       if(httpCode == 200) {
         String response = http.getString();
         if(response == "DENY") {
@@ -846,20 +924,36 @@ void loop() {
       } else if(httpCode == 403) {
         appendMonitor("Authentifizierung fehlgeschlagen - Callsign nicht autorisiert!", "ERROR");
         authenticationError = true;
+      } else if(httpCode < 0) {
+        appendMonitor("HTTP Timeout oder Verbindungsfehler: " + String(httpCode), "ERROR");
+        authenticationError = false;
       } else {
         appendMonitor("HTTP POST Fehler: " + String(httpCode), "ERROR");
         authenticationError = false;
       }
-      http.end();
+      
+      http.end(); // **WICHTIG: HTTPClient korrekt schließen**
     }
   }
 
   // Smart-Polling: Adaptives HTTP-Polling für Hoststar
   static unsigned long lastFetch = 0;
   if (millis() - lastFetch > smartPollInterval && strlen(serverUrl) > 0) {
+    
+    // **OPTIMIERT: Task-Kooperation für Stabilität**
+    yield();
+    
     HTTPClient http;
+    
+    // **OPTIMIERT: HTTP-Timeouts für Stabilität**
+    http.setTimeout(5000); // 5 Sekunden Timeout
+    http.setConnectTimeout(3000); // 3 Sekunden Connect-Timeout
+    
     String url = String(serverUrl) + "/api/smart_getdata.php?callsign=" + String(callsign);
     http.begin(url);
+    
+    appendMonitor("Smart-Poll: " + url, "DEBUG");
+    
     int httpCode = http.GET();
     
     if(httpCode == 200) {
@@ -880,9 +974,10 @@ void loop() {
               String decodedData = decodeBase64Simple(base64Data);
               if (decodedData.length() > 0) {
                 // Debug: HEX-Anzeige der Rohdaten
-                String hexData = "";
+                String hexData;
+                hexData.reserve(decodedData.length() * 3); // Speicher reservieren
                 for (int i = 0; i < decodedData.length(); i++) {
-                  char hex[3];
+                  char hex[4];
                   sprintf(hex, "%02X", (unsigned char)decodedData[i]);
                   hexData += hex;
                   if (i < decodedData.length() - 1) hexData += " ";
@@ -932,14 +1027,21 @@ void loop() {
       appendMonitor("Smart-Polling: Authentifizierung fehlgeschlagen!", "ERROR");
       authenticationError = true;
       smartPollInterval = 30000; // Bei Fehlern langsamer prüfen
+    } else if(httpCode < 0) {
+      appendMonitor("Smart-Polling Timeout/Verbindungsfehler: " + String(httpCode), "ERROR");
+      authenticationError = false;
+      smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
     } else {
       appendMonitor("Smart-Polling Fehler: " + String(httpCode), "ERROR");
       authenticationError = false;
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
     }
     
-    http.end();
+    http.end(); // **WICHTIG: HTTPClient korrekt schließen**
     lastFetch = millis();
+    
+    // **OPTIMIERT: Task-Kooperation für Stabilität**
+    yield();
   }
 }
 
@@ -1089,6 +1191,11 @@ void handleOTAUpdate() {
   
   // Zuerst prüfen ob Update verfügbar
   HTTPClient http;
+  
+  // **OTA UPDATE HTTP TIMEOUTS**
+  http.setTimeout(30000); // 30 Sekunden für OTA-Update (länger wegen Download)
+  http.setConnectTimeout(5000); // 5 Sekunden Connect-Timeout
+  
   http.begin(String(otaRepoUrl) + "/version.txt");
   
   int httpResponseCode = http.GET();
