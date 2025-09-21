@@ -8,6 +8,7 @@
 #include <time.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <HTTPUpdate.h>
 
 #define EEPROM_SIZE 201
 #define SSID_OFFSET 0
@@ -66,12 +67,16 @@ const int   daylightOffset_sec = 3600;
 // OTA
 String localVersion = "1.0.0";
 bool otaCheckedThisSession = false;
+// GitHub OTA Repository (anpassen für Ihr Repository)
+String otaRepoUrl = "https://raw.githubusercontent.com/YOUR-USERNAME/YOUR-REPO/main/ota";
 
 void appendMonitor(const String& msg, const char* level = "INFO");
 String getTimestamp();
 void blinkLED();
 String decodeBase64Simple(String input); // Forward-Deklaration für Smart-Polling
 String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodierung
+void handleOTACheck(); // Forward-Deklaration für OTA
+void handleOTAUpdate(); // Forward-Deklaration für OTA
 
 void bootPrint(const String &msg) {
   static int line = 0;
@@ -333,6 +338,22 @@ void handleRoot() {
           <i class="material-icons right">save</i>
         </button>
       </form>
+      
+      <!-- OTA Update Status -->
+      <h5 style="margin-top:2em;">Firmware Update</h5>
+      <div class="card">
+        <div class="card-content">
+          <p><strong>Aktuelle Version:</strong> )=====";
+  html += localVersion;
+  html += R"=====(</p>
+          <p><strong>OTA Repository:</strong><br><small>)=====";
+  html += otaRepoUrl;
+  html += R"=====(</small></p>
+          <button class="btn blue" onclick="checkOTAUpdate()">Nach Updates suchen</button>
+          <div id="otaStatus" style="margin-top: 10px;"></div>
+        </div>
+      </div>
+      
       <div class="section">
         (c) www.pukepals.com, 73 de AT1NAD
         <br><small>Auch erreichbar unter: <b>http://udmprig-client.local/</b></small>
@@ -430,6 +451,53 @@ void handleRoot() {
       </script>
     </div>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <script>
+      $(document).ready(function(){
+        M.updateTextFields();
+        
+        $('#configForm').submit(function(e){
+          e.preventDefault();
+          var formData = $(this).serialize();
+          
+          $.post('/save', formData, function(data) {
+            M.toast({html: 'Konfiguration gespeichert! ESP32 startet neu...', classes: 'green'});
+            setTimeout(function() {
+              window.location.reload();
+            }, 3000);
+          }).fail(function() {
+            M.toast({html: 'Fehler beim Speichern!', classes: 'red'});
+          });
+        });
+      });
+      
+      window.checkOTAUpdate = function() {
+        $('#otaStatus').html('<div class="progress"><div class="indeterminate"></div></div>');
+        
+        $.get('/ota-check', function(data) {
+          if (data.updateAvailable) {
+            $('#otaStatus').html('<p class="green-text">Update verfügbar: Version ' + data.remoteVersion + '</p><button class="btn orange" onclick="startOTAUpdate()">Update installieren</button>');
+          } else {
+            $('#otaStatus').html('<p class="grey-text">Firmware ist aktuell (Version ' + data.localVersion + ')</p>');
+          }
+        }).fail(function() {
+          $('#otaStatus').html('<p class="red-text">Fehler beim Prüfen auf Updates</p>');
+        });
+      };
+      
+      window.startOTAUpdate = function() {
+        $('#otaStatus').html('<div class="progress"><div class="indeterminate"></div></div><p>Firmware wird aktualisiert... Bitte warten!</p>');
+        
+        $.post('/ota-update', function(data) {
+          $('#otaStatus').html('<p class="green-text">Update erfolgreich! ESP32 startet neu...</p>');
+          setTimeout(function() {
+            window.location.reload();
+          }, 5000);
+        }).fail(function() {
+          $('#otaStatus').html('<p class="red-text">Update fehlgeschlagen!</p>');
+        });
+      };
+    </script>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   </body>
 </html>
@@ -485,6 +553,8 @@ void startWebserver() {
   server.on("/save", HTTP_POST, handleSave);
   server.on("/monitor", handleMonitor);
   server.on("/monitor_clear", handleMonitorClear);
+  server.on("/ota-check", handleOTACheck);
+  server.on("/ota-update", HTTP_POST, handleOTAUpdate);
   server.begin();
 }
 
@@ -525,10 +595,10 @@ void checkForUpdates() {
   appendMonitor("DEBUG: checkForUpdates() aufgerufen", "DEBUG");
   if (otaCheckedThisSession) return;
   otaCheckedThisSession = true;
-  if(strlen(serverUrl) == 0) return;
-  String baseUrl = String(serverUrl) + "/ota";
-  String urlVersion = baseUrl + "/version.txt";
-  String urlFirmware = baseUrl + "/UDMPRG-Client.ino.bin";
+  
+  // GitHub OTA URLs verwenden (unabhängig von serverUrl)
+  String urlVersion = otaRepoUrl + "/version.txt";
+  String urlFirmware = otaRepoUrl + "/UDMPRG-Client.ino.bin";
 
   appendMonitor("OTA: Prüfe auf neue Firmware unter " + urlVersion, "INFO");
   HTTPClient http;
@@ -952,4 +1022,89 @@ String decodeBase64Simple(String input) {
   }
   
   return output;
+}
+
+void handleOTACheck() {
+  appendMonitor("OTA: Checking for updates...", "INFO");
+  
+  HTTPClient http;
+  http.begin(String(otaRepoUrl) + "/version.txt");
+  
+  int httpResponseCode = http.GET();
+  
+  if (httpResponseCode == 200) {
+    String remoteVersion = http.getString();
+    remoteVersion.trim();
+    
+    appendMonitor("OTA: Remote version: " + remoteVersion + ", Local version: " + localVersion, "INFO");
+    
+    bool updateAvailable = (remoteVersion != localVersion);
+    
+    String response = "{\"updateAvailable\":" + String(updateAvailable ? "true" : "false") + 
+                      ",\"remoteVersion\":\"" + remoteVersion + 
+                      "\",\"localVersion\":\"" + localVersion + "\"}";
+    
+    server.send(200, "application/json", response);
+  } else {
+    appendMonitor("OTA: Failed to check version. HTTP code: " + String(httpResponseCode), "ERROR");
+    server.send(500, "application/json", "{\"error\":\"Failed to check version\"}");
+  }
+  
+  http.end();
+}
+
+void handleOTAUpdate() {
+  appendMonitor("OTA: Starting firmware update...", "INFO");
+  
+  // Zuerst prüfen ob Update verfügbar
+  HTTPClient http;
+  http.begin(String(otaRepoUrl) + "/version.txt");
+  
+  int httpResponseCode = http.GET();
+  
+  if (httpResponseCode != 200) {
+    appendMonitor("OTA: Cannot verify version. Update aborted.", "ERROR");
+    server.send(500, "application/json", "{\"error\":\"Cannot verify version\"}");
+    http.end();
+    return;
+  }
+  
+  String remoteVersion = http.getString();
+  remoteVersion.trim();
+  http.end();
+  
+  if (remoteVersion == localVersion) {
+    appendMonitor("OTA: No update needed. Versions match.", "INFO");
+    server.send(200, "application/json", "{\"result\":\"No update needed\"}");
+    return;
+  }
+  
+  appendMonitor("OTA: Downloading firmware version " + remoteVersion, "INFO");
+  
+  // Firmware-URL
+  String firmwareUrl = String(otaRepoUrl) + "/udm-prig-client.ino.esp32.bin";
+  
+  httpUpdate.setLedPin(LED_PIN, LOW);
+  
+  // WiFiClient für neue HTTPUpdate API verwenden
+  WiFiClient client;
+  t_httpUpdate_return ret = httpUpdate.update(client, firmwareUrl);
+  
+  switch (ret) {
+    case HTTP_UPDATE_FAILED:
+      appendMonitor("OTA: Update failed. Error: " + httpUpdate.getLastErrorString(), "ERROR");
+      server.send(500, "application/json", "{\"error\":\"Update failed\"}");
+      break;
+      
+    case HTTP_UPDATE_NO_UPDATES:
+      appendMonitor("OTA: No updates available", "INFO");
+      server.send(200, "application/json", "{\"result\":\"No updates\"}");
+      break;
+      
+    case HTTP_UPDATE_OK:
+      appendMonitor("OTA: Update successful! Restarting...", "INFO");
+      server.send(200, "application/json", "{\"result\":\"Update successful\"}");
+      ESP.restart();
+      break;
+  }
 }
