@@ -11,7 +11,7 @@ require_once("db.php");
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
 <style>
-body {padding:18px;}
+body {padding:18px; max-width: 1400px; margin: 0 auto;}
 pre {font-size: 12px; background:#222; color:#eee; padding:10px;}
 .input-field label {color: #009688;}
 .tabs .tab a.active { color: #009688;}
@@ -22,6 +22,15 @@ td input, td select {width:95%; margin:0; font-size:1em;}
 td {vertical-align:middle;}
 .icon-btn {border:none; background:transparent; cursor:pointer;}
 .success-msg {color: #388e3c; font-weight: bold;}
+.container { max-width: 1400px; }
+@media (max-width: 768px) { 
+  body { padding: 10px; } 
+  table { font-size: 0.9em; }
+}
+@media (max-width: 480px) { 
+  table { font-size: 0.8em; }
+  td input, td select { font-size: 0.8em; }
+}
 </style>
 </head>
 <body>
@@ -71,27 +80,18 @@ td {vertical-align:middle;}
   <h5 style="margin-top:2em;">Client-Liste</h5>
   <table class="striped" id="clienttbl">
     <thead>
-      <tr><th>#</th><th>Callsign</th><th>Port</th><th>Status</th><th>Loglevel</th><th>Aktion</th></tr>
+      <tr><th>#</th><th>Callsign</th><th>Status</th><th>Aktion</th></tr>
     </thead>
     <tbody id="clientbody"></tbody>
     <tfoot>
       <tr>
         <td></td>
         <td><input id="new_callsign" maxlength="31"></td>
-        <td><input id="new_port" type="number" min="1" max="65535"></td>
         <td>
           <select id="new_status">
             <option value="0">allow</option>
             <option value="1">deny</option>
             <option value="2">blocked</option>
-          </select>
-        </td>
-        <td>
-          <select id="new_loglevel">
-            <option value="0">Error</option>
-            <option value="1">Info</option>
-            <option value="2">Warning</option>
-            <option value="3">Debug</option>
           </select>
         </td>
         <td><button class="icon-btn" type="button" onclick="addRow()"><i class='material-icons green-text'>save</i></button></td>
@@ -161,23 +161,17 @@ function renderTable(list){
     if(editing[i]){
       body += '<tr><td>'+(i+1)+'</td>';
       body += '<td><input id="e_callsign_'+i+'" maxlength="31" value="'+(c.callsign||"")+'" /></td>';
-      body += '<td><input id="e_port_'+i+'" type="number" min="1" max="65535" value="'+(c.port||"")+'" /></td>';
       body += '<td><select id="e_status_'+i+'">';
       body += '<option value="0"'+(c.status==0?' selected':'')+'>allow</option>';
       body += '<option value="1"'+(c.status==1?' selected':'')+'>deny</option>';
       body += '<option value="2"'+(c.status==2?' selected':'')+'>blocked</option></select></td>';
-      body += '<td><select id="e_loglevel_'+i+'">';
-      for(let l=0;l<=3;l++) body += `<option value="${l}"${(c.loglevel==l?' selected':'')}>${['Error','Info','Warning','Debug'][l]}</option>`;
-      body += '</select></td>';
       body += '<td><button class="icon-btn" type="button" onclick="saveRow('+i+')"><i class="material-icons green-text">save</i></button>';
       body += '<button class="icon-btn" type="button" onclick="cancelEdit('+i+')"><i class="material-icons">cancel</i></button>';
       body += '<button class="icon-btn" type="button" onclick="delRow('+i+')"><i class="material-icons red-text">delete</i></button></td></tr>';
     } else {
       body += '<tr><td>'+(i+1)+'</td>';
       body += '<td ondblclick="editRow('+i+')">'+(c.callsign||"")+'</td>';
-      body += '<td ondblclick="editRow('+i+')">'+(c.port||"")+'</td>';
       body += '<td ondblclick="editRow('+i+')">'+statusLabel(c.status)+'</td>';
-      body += '<td ondblclick="editRow('+i+')">'+(['Error','Info','Warning','Debug'][c.loglevel]||'Info')+'</td>';
       body += '<td><button class="icon-btn" type="button" onclick="editRow('+i+')"><i class="material-icons blue-text">edit</i></button>';
       body += '<button class="icon-btn" type="button" onclick="delRow('+i+')"><i class="material-icons red-text">delete</i></button></td></tr>';
     }
@@ -190,24 +184,18 @@ function editRow(i){ editing[i]=true; renderTable(currentList); }
 function cancelEdit(i){ editing[i]=false; renderTable(currentList); }
 function saveRow(i){
   let data = { id:currentList[i].id, callsign:document.getElementById('e_callsign_'+i).value,
-    port:document.getElementById('e_port_'+i).value,
-    status:document.getElementById('e_status_'+i).value,
-    loglevel:document.getElementById('e_loglevel_'+i).value };
+    status:document.getElementById('e_status_'+i).value };
   fetch('api/client_list_save.php', {method:'POST',body:new URLSearchParams(data)}).then(fetchList);
   editing[i]=false;
 }
 function delRow(i){ if(!confirm('Wirklich löschen?')) return; fetch('api/client_list_del.php?id='+currentList[i].id).then(fetchList); }
 function addRow(){
   let data = { id:-1, callsign:document.getElementById('new_callsign').value,
-    port:document.getElementById('new_port').value,
-    status:document.getElementById('new_status').value,
-    loglevel:document.getElementById('new_loglevel').value };
-  if(!data.callsign || !data.port) { alert('Alle Felder ausfüllen!'); return; }
+    status:document.getElementById('new_status').value };
+  if(!data.callsign) { alert('Callsign eingeben!'); return; }
   fetch('api/client_list_save.php', {method:'POST',body:new URLSearchParams(data)}).then(_=>{
     document.getElementById('new_callsign').value=''; 
-    document.getElementById('new_port').value=''; 
     document.getElementById('new_status').value='0';
-    document.getElementById('new_loglevel').value='1';
     fetchList();
   });
 }

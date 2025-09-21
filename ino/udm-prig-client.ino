@@ -259,7 +259,7 @@ void handleRoot() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
     <style>
-      body {padding:18px;}
+      body {padding:18px; max-width: 1200px; margin: 0 auto;}
       pre {font-size: 12px; background:#222; color:#eee; padding:10px;}
       .input-field label {color: #009688;}
       .tabs .tab a.active { color: #009688;}
@@ -275,6 +275,8 @@ void handleRoot() {
       .log-warn { color: #ffe082 !important; }
       .log-default { color: #eee !important; }
       .log-rs232 { color: #ffecb3 !important; font-family:monospace; }
+      .container { max-width: 1200px; }
+      @media (max-width: 768px) { body { padding: 10px; } }
     </style>
   </head>
   <body>
