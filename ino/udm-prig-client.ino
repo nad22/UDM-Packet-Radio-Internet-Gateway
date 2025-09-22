@@ -61,7 +61,7 @@ unsigned long lastRS232 = 0;
 
 unsigned long lastRX = 0;
 unsigned long lastTX = 0;
-const unsigned long RS232_ACTIVE_TIME = 200;
+const unsigned long RS232_ACTIVE_TIME = 1000; // 1 Sekunde für bessere Sichtbarkeit
 
 WebServer server(80);
 
@@ -327,6 +327,15 @@ void drawWifiStrength(int strength) {
 }
 
 void drawRXTXRects() {
+  // Debug: Aktuelle RX/TX-Status ausgeben
+  unsigned long now = millis();
+  bool rxActive = (now - lastRX < RS232_ACTIVE_TIME);
+  bool txActive = (now - lastTX < RS232_ACTIVE_TIME);
+  
+  if (rxActive || txActive) {
+    Serial.println("[DEBUG] RX/TX Status - RX:" + String(rxActive) + " TX:" + String(txActive) + 
+                   " (lastRX:" + String(lastRX) + " lastTX:" + String(lastTX) + " now:" + String(now) + ")");
+  }
   int rect_width = 26;
   int rect_height = 16;
   int rect_y = 48;
@@ -1794,7 +1803,7 @@ void loop() {
   }
 
   static unsigned long lastOled = 0;
-  if (millis() - lastOled > 1000) { // **OPTIMIERT: 1000ms Intervall für weniger CPU-Last**
+  if (millis() - lastOled > 100) { // **RX/TX-RESPONSIVE: 100ms für bessere RX/TX-Anzeige**
     updateOLED();
     lastOled = millis();
   }
@@ -1807,7 +1816,12 @@ void loop() {
     while (RS232.available()) {
       char c = RS232.read();
       sdata += c;
-      lastTX = millis();
+      lastTX = millis(); // TX-Indikator setzen (Client SENDET Daten ZUM Server)
+    }
+    
+    // Debug: TX-Event loggen (Daten ZUM Server senden)
+    if (sdata.length() > 0) {
+      // Serial.println("[DEBUG] TX Event (Client→Server) - lastTX set to: " + String(lastTX));
     }
     
     if(sdata.length() > 0 && strlen(serverUrl) > 0) {
@@ -1931,7 +1945,8 @@ void loop() {
                 // RS232 ausgeben (bereits mit korrekten Zeilenendezeichen vom Server)
                 RS232.print(decodedData);
                 RS232.flush(); // Sicherstellen dass Daten gesendet werden
-                lastRX = millis();
+                lastRX = millis(); // RX-Indikator setzen (Client EMPFÄNGT Daten VOM Server)
+                // Serial.println("[DEBUG] RX Event (Server→Client) - lastRX set to: " + String(lastRX));
                 appendMonitor("[SMART] Empfangen: " + String(decodedData.length()) + " bytes", "INFO");
                 appendMonitor("[SMART] KISS: " + decodeKissFrame(decodedData), "DEBUG");
               }
@@ -1964,7 +1979,8 @@ void loop() {
         if(response.length() > 0 && response != "{\"error\":\"DENY\"}") {
           RS232.print(response);
           RS232.flush(); // Daten senden (keine zusätzlichen \r\n)
-          lastRX = millis();
+          lastRX = millis(); // RX-Indikator setzen (Client EMPFÄNGT Daten VOM Server)
+          Serial.println("[DEBUG] RX Event Legacy (Server→Client) - lastRX set to: " + String(lastRX));
           appendMonitor("Legacy-Format empfangen: " + response, "INFO");
         }
       }
