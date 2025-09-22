@@ -115,6 +115,13 @@ unsigned long lastWatchdogReset = 0;
 unsigned long lastMemoryCheck = 0;
 const unsigned long MEMORY_CHECK_INTERVAL = 60000; // 60 Sekunden (weniger häufig)
 
+// CPU-Last Messung
+unsigned long lastCpuMeasurement = 0;
+unsigned long busyTime = 0;
+unsigned long idleTime = 0;
+float cpuUsagePercent = 0.0;
+const unsigned long CPU_MEASUREMENT_INTERVAL = 10000; // CPU-Last alle 10 Sekunden messen
+
 void appendMonitor(const String& msg, const char* level = "INFO");
 String getTimestamp();
 void blinkLED();
@@ -536,7 +543,6 @@ void handleRoot() {
       .container { max-width: 1200px; }
       .wifi-signal-bar { background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden; }
       .wifi-signal-fill { height: 100%; border-radius: 10px; transition: width 0.5s ease; }
-      .badge { background: #f44336; color: white; border-radius: 12px; padding: 2px 8px; font-size: 12px; font-weight: bold; margin-left: 8px; }
       @media (max-width: 768px) { body { padding: 10px; } }
     </style>
   </head>
@@ -753,6 +759,7 @@ void handleRoot() {
             </div>
             <div class="col s6">
               <p><strong>Temperature:</strong> <span id="temperature">-</span>°C</p>
+              <p><strong>CPU Usage:</strong> <span id="cpuUsage">-</span>%</p>
               <p><strong>Display Type:</strong> <span id="displayType">-</span></p>
               <p><strong>SSL Validation:</strong> <span id="sslValidation">-</span></p>
             </div>
@@ -761,7 +768,7 @@ void handleRoot() {
           <!-- Crash Logs Section -->
           <div class="card">
             <div class="card-content">
-              <span class="card-title">Crash Logs <span class="badge red" id="crashLogBadge">0</span></span>
+              <span class="card-title">Crash Logs</span>
               <div id="crashLogsContainer">
                 <p class="grey-text">Lade Crash Logs...</p>
               </div>
@@ -890,17 +897,14 @@ void handleRoot() {
             document.getElementById('uptime').textContent = data.system.uptime || '-';
             document.getElementById('bootReason').textContent = data.system.bootReason || '-';
             document.getElementById('temperature').textContent = data.system.temperature || '-';
+            document.getElementById('cpuUsage').textContent = data.system.cpuUsage || '-';
             document.getElementById('displayType').textContent = data.system.displayType || '-';
             document.getElementById('sslValidation').textContent = data.system.sslValidation || '-';
             
             // Crash Logs anzeigen
-            const crashLogBadge = document.getElementById('crashLogBadge');
             const crashLogsContainer = document.getElementById('crashLogsContainer');
             
             if (data.crashLogs && data.crashLogs.length > 0) {
-              crashLogBadge.textContent = data.crashLogCount || data.crashLogs.length;
-              crashLogBadge.style.display = 'inline';
-              
               let crashHtml = '<div class="collection">';
               data.crashLogs.forEach((log, index) => {
                 const timeClass = index === 0 ? 'red-text' : 'grey-text text-darken-2';
@@ -913,8 +917,6 @@ void handleRoot() {
               
               crashLogsContainer.innerHTML = crashHtml;
             } else {
-              crashLogBadge.textContent = '0';
-              crashLogBadge.style.display = 'none';
               crashLogsContainer.innerHTML = '<p class="green-text">Keine Crash Logs gefunden - System läuft stabil!</p>';
             }
           }).catch(err => {
@@ -1167,6 +1169,9 @@ void handleHardwareInfo() {
   // Temperature (approximation)
   json += "\"temperature\":\"" + String(temperatureRead(), 1) + "\",";
   
+  // CPU Usage
+  json += "\"cpuUsage\":\"" + String(cpuUsagePercent, 1) + "\",";
+  
   // Display type
   String dispType = (displayType == DISPLAY_SH1106G) ? "SH1106G" : "SSD1306";
   json += "\"displayType\":\"" + dispType + "\",";
@@ -1323,10 +1328,13 @@ void checkWiFiConnection() {
       appendMonitor("Mehrere WiFi-Fehler. Führe kompletten WiFi-Reset durch...", "WARNING");
       WiFi.disconnect(true);
       delay(1000);
+      esp_task_wdt_reset(); // Watchdog während WiFi-Reset
       WiFi.mode(WIFI_OFF);
       delay(1000);
+      esp_task_wdt_reset(); // Watchdog während WiFi-Reset
       WiFi.mode(WIFI_STA);
       delay(1000);
+      esp_task_wdt_reset(); // Watchdog während WiFi-Reset
       wifiReconnectAttempts = 0;
     }
     
@@ -1688,6 +1696,44 @@ void loop() {
   // **WiFi-Verbindungsüberwachung**
   checkWiFiConnection();
   
+  // **CPU-Last Messung**
+  if (now - lastCpuMeasurement > CPU_MEASUREMENT_INTERVAL) {
+    // Vereinfachte CPU-Last basierend auf Loop-Performance
+    static unsigned long loopCount = 0;
+    static unsigned long lastLoopCountMeasurement = 0;
+    
+    loopCount++;
+    
+    if (lastLoopCountMeasurement == 0) {
+      lastLoopCountMeasurement = now;
+    } else {
+      // Berechne Loops pro Sekunde
+      unsigned long timeDiff = now - lastLoopCountMeasurement;
+      if (timeDiff >= CPU_MEASUREMENT_INTERVAL) {
+        float loopsPerSecond = (float)loopCount * 1000.0 / (float)timeDiff;
+        
+        // Referenz: Bei ~1000+ Loops/s ist das System idle (niedrige CPU-Last)
+        // Bei <500 Loops/s ist das System beschäftigt (hohe CPU-Last)
+        if (loopsPerSecond > 1000) {
+          cpuUsagePercent = 10.0; // Niedrige CPU-Last
+        } else if (loopsPerSecond > 750) {
+          cpuUsagePercent = 25.0; // Moderate CPU-Last
+        } else if (loopsPerSecond > 500) {
+          cpuUsagePercent = 50.0; // Mittlere CPU-Last
+        } else if (loopsPerSecond > 250) {
+          cpuUsagePercent = 75.0; // Hohe CPU-Last
+        } else {
+          cpuUsagePercent = 90.0; // Sehr hohe CPU-Last
+        }
+        
+        // Reset für nächste Messung
+        loopCount = 0;
+        lastLoopCountMeasurement = now;
+        lastCpuMeasurement = now;
+      }
+    }
+  }
+  
   // **OPTIMIERT: Memory-Überwachung (weniger häufig)**
   if (now - lastMemoryCheck > MEMORY_CHECK_INTERVAL) {
     size_t freeHeap = ESP.getFreeHeap();
@@ -1697,8 +1743,17 @@ void loop() {
     
     appendMonitor("System OK - Heap:" + String(freeHeap) + "B Stack:" + String(stackFree) + " Uptime:" + String(uptimeSeconds) + "s", "INFO");
     
+    // Erweiterte Systemdiagnose bei niedrigem Speicher
+    if (freeHeap < 20000) { // Warnung unter 20KB
+      String wifiStatus = (WiFi.status() == WL_CONNECTED) ? "Connected" : "Disconnected";
+      String diagnostics = "Low memory warning: Heap=" + String(freeHeap) + " Stack=" + String(stackFree) + " WiFi=" + wifiStatus;
+      saveCrashLog(diagnostics);
+      appendMonitor("WARNUNG: Wenig freier Speicher! " + diagnostics, "WARNING");
+    }
+    
     if (freeHeap < 10000) { // Unter 10KB freier Speicher
       appendMonitor("KRITISCH: Wenig freier Speicher! Neustart wird eingeleitet.", "ERROR");
+      saveCrashLog("Critical memory shortage - Emergency restart (Heap: " + String(freeHeap) + "B)");
       delay(1000);
       ESP.restart();
     }
@@ -1734,6 +1789,9 @@ void loop() {
       String postData;
       postData.reserve(sdata.length() + 50);
       postData = "callsign=" + String(callsign) + "&data=" + sdata;
+      
+      // Watchdog vor HTTP-Operation zurücksetzen
+      esp_task_wdt_reset();
       
       int httpCode = http.POST(postData);
       
@@ -1783,6 +1841,9 @@ void loop() {
       }
       
       http.end(); // **WICHTIG: HTTPClient korrekt schließen**
+      
+      // Watchdog nach HTTP-Operation zurücksetzen
+      esp_task_wdt_reset();
     }
   }
 
@@ -1799,6 +1860,9 @@ void loop() {
     configureHTTPClient(http, url);
     
     appendMonitor("Smart-Poll: " + url, "DEBUG");
+    
+    // Watchdog vor HTTP-Operation zurücksetzen
+    esp_task_wdt_reset();
     
     int httpCode = http.GET();
     
@@ -1907,6 +1971,9 @@ void loop() {
     
     http.end(); // **WICHTIG: HTTPClient korrekt schließen**
     lastFetch = millis();
+    
+    // Watchdog nach HTTP-Operation zurücksetzen
+    esp_task_wdt_reset();
     
     // **OPTIMIERT: Task-Kooperation für Stabilität**
     yield();
