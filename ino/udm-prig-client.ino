@@ -148,6 +148,7 @@ bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
 bool isGatewayReachable(); // Forward-Deklaration für Gateway-Ping
+bool connectToStrongestAP(); // Forward-Deklaration für stärksten AP finden
 
 // Root CA Bundle für SSL-Zertifikatsprüfung (Let's Encrypt, DigiCert, etc.)
 const char* root_ca = \
@@ -880,7 +881,7 @@ void handleRoot() {
     
     <div id="monitor" class="col s12">
       <h6>Serieller Monitor</h6>
-      <pre id="monitorArea" style="height:350px;overflow:auto;"></pre>
+      <pre id="monitorArea" style="height:350px;overflow:auto;resize:vertical;border:1px solid #ccc;padding:10px;"></pre>
       <button class="btn red" onclick="clearMonitor()">Leeren</button>
       <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -1514,16 +1515,92 @@ bool isGatewayReachable() {
     return false; // Kein Gateway verfügbar
   }
   
-  // Einfacher TCP-Connect-Test zum Gateway Port 80
-  WiFiClient client;
-  client.setTimeout(2000); // 2 Sekunden Timeout
+  // **EINFACHER GATEWAY-CHECK: ARP-Auflösung prüfen**
+  // Wenn WiFi connected ist und wir eine gültige Gateway-IP haben,
+  // ist das Gateway normalerweise erreichbar.
+  // Zusätzlich: Kurzer DNS-Test als Indikator
+  IPAddress testIP;
+  bool dnsWorks = WiFi.hostByName("8.8.8.8", testIP); // Google DNS
   
-  bool reachable = client.connect(gateway, 80);
-  if (reachable) {
-    client.stop();
+  // Wenn DNS funktioniert, ist Gateway definitiv erreichbar
+  if (dnsWorks) {
+    return true;
   }
   
-  return reachable;
+  // Fallback: Minimaler TCP-Test mit sehr kurzem Timeout
+  WiFiClient client;
+  client.setTimeout(500); // Nur 0.5 Sekunden
+  bool connected = client.connect(gateway, 53); // DNS Port (weniger invasiv als 80)
+  if (connected) {
+    client.stop();
+    return true;
+  }
+  
+  return false; // Gateway wahrscheinlich nicht erreichbar
+}
+
+// Verbinde mit dem stärksten verfügbaren Access Point
+bool connectToStrongestAP() {
+  appendMonitor("Suche nach stärkstem " + String(wifiSsid) + " Access Point...", "INFO");
+  
+  // WiFi-Scan starten
+  int networkCount = WiFi.scanNetworks();
+  
+  if (networkCount == 0) {
+    appendMonitor("Keine WiFi-Netzwerke gefunden!", "ERROR");
+    return false;
+  }
+  
+  // Finde den stärksten AP mit unserem SSID
+  int bestRSSI = -100;
+  int bestNetwork = -1;
+  
+  for (int i = 0; i < networkCount; i++) {
+    String scannedSSID = WiFi.SSID(i);
+    int32_t rssi = WiFi.RSSI(i);
+    
+    appendMonitor("Gefunden: " + scannedSSID + " (RSSI: " + String(rssi) + " dBm)", "DEBUG");
+    
+    // Prüfe ob es unser gewünschtes SSID ist und stärker als der bisherige beste
+    if (scannedSSID == String(wifiSsid) && rssi > bestRSSI) {
+      bestRSSI = rssi;
+      bestNetwork = i;
+    }
+  }
+  
+  if (bestNetwork == -1) {
+    appendMonitor("SSID '" + String(wifiSsid) + "' nicht gefunden!", "ERROR");
+    return false;
+  }
+  
+  // Verbinde mit dem stärksten AP
+  uint8_t* bssid = WiFi.BSSID(bestNetwork);
+  appendMonitor("Verbinde mit stärkstem AP: RSSI " + String(bestRSSI) + " dBm", "INFO");
+  
+  // Verbindung mit spezifischem BSSID (MAC-Adresse des AP)
+  WiFi.begin(wifiSsid, wifiPass, 0, bssid);
+  
+  // Warte auf Verbindung
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < 40) {
+    delay(500);
+    timeout++;
+    
+    if (timeout % 10 == 0) {
+      appendMonitor("Verbindung läuft... " + String(timeout/2) + "/20 Sekunden", "INFO");
+    }
+  }
+  
+  // Cleanup scan results
+  WiFi.scanDelete();
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    appendMonitor("Erfolgreich verbunden! RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
+    return true;
+  } else {
+    appendMonitor("Verbindung zum stärksten AP fehlgeschlagen!", "ERROR");
+    return false;
+  }
 }
 
 // Erweiterte WiFi-Diagnose
@@ -1571,18 +1648,10 @@ void checkWiFiConnection() {
       wifiReconnectAttempts = 0;
     }
     
-    // WiFi-Verbindung wiederherstellen
-    WiFi.begin(wifiSsid, wifiPass);
+    // **INTELLIGENTE WiFi-Wiederverbindung mit stärkstem AP**
+    bool reconnected = connectToStrongestAP();
     
-    // Warte auf Verbindung (max 10 Sekunden)
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-      delay(500);
-      attempts++;
-      esp_task_wdt_reset(); // Watchdog zurücksetzen
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
+    if (reconnected) {
       appendMonitor("WiFi erfolgreich wiederverbunden. IP: " + WiFi.localIP().toString() + ", RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
       connectionError = false;
       forceWiFiReconnect = false;
@@ -1623,23 +1692,10 @@ bool tryConnectWiFi() {
   // **WiFi-Protokoll auf 802.11n begrenzen (bessere Kompatibilität)**
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
   
-  // Verbindung aufbauen
-  WiFi.begin(wifiSsid, wifiPass);
+  // **INTELLIGENTE AP-WAHL: Verbinde mit stärkstem Access Point**
+  bool connected = connectToStrongestAP();
   
-  // Warte auf Verbindung (max 20 Sekunden)
-  int timeout = 0;
-  while (WiFi.status() != WL_CONNECTED && timeout < 40) {
-    delay(500);
-    timeout++;
-    // Watchdog entfernt
-    
-    // Status-Updates alle 5 Sekunden
-    if (timeout % 10 == 0) {
-      appendMonitor("WiFi-Verbindung... Versuch " + String(timeout/2) + "/20", "INFO");
-    }
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
+  if (connected) {
     appendMonitor("WLAN erfolgreich verbunden mit " + String(wifiSsid), "INFO");
     appendMonitor("IP-Adresse: " + WiFi.localIP().toString(), "INFO");
     appendMonitor("RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
@@ -1650,8 +1706,8 @@ bool tryConnectWiFi() {
     
     return true;
   } else {
-    appendMonitor("WLAN-Verbindung fehlgeschlagen nach 20 Sekunden (Status: " + String(WiFi.status()) + ")", "ERROR");
-    saveCrashLog("WiFi connect timeout (Status: " + String(WiFi.status()) + ")");
+    appendMonitor("WLAN-Verbindung fehlgeschlagen - kein starker AP gefunden", "ERROR");
+    saveCrashLog("WiFi connect to strongest AP failed");
     return false;
   }
 }
@@ -2352,7 +2408,12 @@ void loop() {
         connectionError = true; // Verbindungsfehler setzen
         
         // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
-        if (!isGatewayReachable()) {
+        IPAddress gateway = WiFi.gatewayIP();
+        bool gatewayReachable = isGatewayReachable();
+        
+        appendMonitor("Gateway " + gateway.toString() + " Check: " + (gatewayReachable ? "OK" : "FAILED"), "DEBUG");
+        
+        if (!gatewayReachable) {
           appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
           forceWiFiReconnect = true;
         } else {
