@@ -147,6 +147,7 @@ void logWiFiDiagnostics(); // Forward-Deklaration für erweiterte WiFi-Diagnose
 bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
+bool isGatewayReachable(); // Forward-Deklaration für Gateway-Ping
 
 // Root CA Bundle für SSL-Zertifikatsprüfung (Let's Encrypt, DigiCert, etc.)
 const char* root_ca = \
@@ -1502,6 +1503,29 @@ String getFormattedUptime() {
   return uptime;
 }
 
+// Gateway-Erreichbarkeit prüfen (True WiFi-Status)
+bool isGatewayReachable() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false; // WiFi nicht verbunden
+  }
+  
+  IPAddress gateway = WiFi.gatewayIP();
+  if (gateway == IPAddress(0, 0, 0, 0)) {
+    return false; // Kein Gateway verfügbar
+  }
+  
+  // Einfacher TCP-Connect-Test zum Gateway Port 80
+  WiFiClient client;
+  client.setTimeout(2000); // 2 Sekunden Timeout
+  
+  bool reachable = client.connect(gateway, 80);
+  if (reachable) {
+    client.stop();
+  }
+  
+  return reachable;
+}
+
 // Erweiterte WiFi-Diagnose
 void logWiFiDiagnostics() {
   // Entfernt: Serial Debug-Ausgaben für bessere Performance
@@ -2152,8 +2176,15 @@ void loop() {
           authenticationError = false;
           sslCertificateError = false;
           connectionError = true;
-          // Bei HTTP-Fehlern WiFi-Überprüfung erzwingen
-          forceWiFiReconnect = true;
+          
+          // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
+          if (!isGatewayReachable()) {
+            appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
+            forceWiFiReconnect = true;
+          } else {
+            appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
+            // Gateway erreichbar = WiFi OK, Problem liegt am Server
+          }
         }
       } else {
         wl_status_t currentWiFiStatus = WiFi.status();
@@ -2166,8 +2197,15 @@ void loop() {
         authenticationError = false;
         sslCertificateError = false;
         connectionError = true;
-        // Bei HTTP-Fehlern WiFi-Überprüfung erzwingen
-        forceWiFiReconnect = true;
+        
+        // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
+        if (!isGatewayReachable()) {
+          appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
+          forceWiFiReconnect = true;
+        } else {
+          appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
+          // Gateway erreichbar = WiFi OK, Problem liegt am Server
+        }
       }
       
       http.end(); // **WICHTIG: HTTPClient korrekt schließen**
@@ -2312,8 +2350,15 @@ void loop() {
         sslCertificateError = false;
         authenticationError = false;
         connectionError = true; // Verbindungsfehler setzen
-        // Bei Smart-Polling-Fehlern WiFi-Überprüfung erzwingen
-        forceWiFiReconnect = true;
+        
+        // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
+        if (!isGatewayReachable()) {
+          appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
+          forceWiFiReconnect = true;
+        } else {
+          appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
+          // Gateway erreichbar = WiFi OK, Problem liegt am Server
+        }
       }
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
     } else {
@@ -2322,8 +2367,14 @@ void loop() {
       sslCertificateError = false;
       connectionError = true; // Allgemeine HTTP-Fehler als Verbindungsfehler behandeln
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
-      // Bei Smart-Polling-Fehlern WiFi-Überprüfung erzwingen
-      forceWiFiReconnect = true;
+      
+      // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
+      if (!isGatewayReachable()) {
+        appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
+        forceWiFiReconnect = true;
+      } else {
+        appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
+      }
     }
     
     http.end(); // **WICHTIG: HTTPClient korrekt schließen**
