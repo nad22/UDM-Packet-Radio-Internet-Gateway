@@ -114,12 +114,12 @@ class BroadcastManager {
 
     private function loadServerCallsign() {
         try {
-            $stmt = $this->mysqli->prepare("SELECT config_value FROM server_config WHERE config_key = 'server_callsign'");
+            $stmt = $this->mysqli->prepare("SELECT callsign FROM server_config WHERE id = 1 LIMIT 1");
             $stmt->execute();
             $result = $stmt->get_result();
             
             if ($row = $result->fetch_assoc()) {
-                $this->serverCallsign = $row['config_value'];
+                $this->serverCallsign = $row['callsign'];
             }
             $stmt->close();
             

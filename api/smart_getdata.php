@@ -24,75 +24,80 @@ if (empty($callsign)) {
 try {
     global $mysqli;
     
-    // **AUTOMATISCHER 5-MINUTEN BROADCAST**
-    try {
-        $broadcaster = new BroadcastManager($mysqli);
-        $broadcastSent = $broadcaster->checkAndSendBroadcast();
-        if ($broadcastSent) {
-            error_log("[AUTO-BROADCAST] 5-Minuten Broadcast gesendet");
+    // **OPTIMIERT: Broadcast nur alle 30 Sekunden statt bei jedem Request**
+    static $lastBroadcastCheck = 0;
+    $currentTime = time();
+    
+    if ($currentTime - $lastBroadcastCheck >= 30) {
+        try {
+            $broadcaster = new BroadcastManager($mysqli);
+            $broadcastSent = $broadcaster->checkAndSendBroadcast();
+            if ($broadcastSent) {
+                error_log("[AUTO-BROADCAST] 5-Minuten Broadcast gesendet");
+            }
+            $lastBroadcastCheck = $currentTime;
+        } catch (Exception $broadcastError) {
+            error_log("[AUTO-BROADCAST] Fehler: " . $broadcastError->getMessage());
         }
-    } catch (Exception $broadcastError) {
-        error_log("[AUTO-BROADCAST] Fehler: " . $broadcastError->getMessage());
     }
     
-    // Authentifizierung prüfen
-    $stmt = $mysqli->prepare("SELECT status FROM clients WHERE callsign = ?");
+    // OPTIMIERT: Ein einziger DB-Query für Auth + Data
+    $stmt = $mysqli->prepare("
+        SELECT c.status, 
+               COUNT(n.id) as notification_count,
+               GROUP_CONCAT(n.id ORDER BY n.created_at ASC) as notification_ids,
+               GROUP_CONCAT(n.message ORDER BY n.created_at ASC SEPARATOR '|') as messages
+        FROM clients c 
+        LEFT JOIN notifications n ON c.callsign = n.callsign AND n.delivered_at IS NULL 
+        WHERE c.callsign = ? 
+        GROUP BY c.callsign, c.status
+    ");
     $stmt->bind_param("s", $callsign);
     $stmt->execute();
     $result = $stmt->get_result();
-    $user = $result->fetch_assoc();
+    $data = $result->fetch_assoc();
     
-    if (!$user) {
+    if (!$data) {
         http_response_code(403);
         echo json_encode(['error' => 'UNKNOWN']);
         exit;
     }
     
-    if ($user['status'] != 1) {
+    if ($data['status'] != 1) {
         http_response_code(403);
         echo json_encode(['error' => 'DENY']);
         exit;
     }
-    
+
     // Standard-Response aufbauen
     $response = [
         'data' => '',
         'next_poll_seconds' => 2.0, // Ultra-fast: 2s baseline
-        'notifications_count' => 0,
+        'notifications_count' => (int)$data['notification_count'],
         'has_data' => false,
         'timestamp' => time()
     ];
     
-    // Prüfe auf neue Notifications für diesen Client
-    $stmt = $mysqli->prepare("SELECT id, message, created_at FROM notifications WHERE callsign = ? AND delivered_at IS NULL ORDER BY created_at ASC LIMIT 10");
-    $stmt->bind_param("s", $callsign);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $notifications = [];
-    while ($row = $result->fetch_assoc()) {
-        $notifications[] = $row;
-    }
-    
-    $response['notifications_count'] = count($notifications);
-    
-    if (count($notifications) > 0) {
+    if ($data['notification_count'] > 0) {
         // Neue Notifications gefunden!
-        $allData = '';
-        $notificationIds = [];
+        $messages = explode('|', $data['messages']);
+        $notificationIds = explode(',', $data['notification_ids']);
         
-        foreach ($notifications as $notification) {
-            // Notifications sind bereits base64-kodiert in der DB
-            $frameData = base64_decode($notification['message']);
-            $allData .= $frameData;
-            $notificationIds[] = $notification['id'];
+        $allData = '';
+        foreach ($messages as $message) {
+            if (!empty($message)) {
+                // Messages sind bereits base64-kodiert in der DB
+                $frameData = base64_decode($message);
+                $allData .= $frameData;
+            }
         }
         
         $response['data'] = base64_encode($allData);
         $response['has_data'] = true;
         $response['next_poll_seconds'] = 0.5; // Ultra-fast: 0.5s after receiving data
         
-        // Markiere Notifications als zugestellt
-        if (!empty($notificationIds)) {
+        // OPTIMIERT: Batch-Update aller Notifications auf einmal
+        if (!empty($notificationIds) && !empty($notificationIds[0])) {
             $placeholders = str_repeat('?,', count($notificationIds) - 1) . '?';
             $stmt = $mysqli->prepare("UPDATE notifications SET delivered_at = ? WHERE id IN ($placeholders)");
             $params = array_merge([time()], $notificationIds);
@@ -101,33 +106,9 @@ try {
             $stmt->execute();
         }
         
-        // Log successful delivery (optional)
-        try {
-            $logStmt = $mysqli->prepare("INSERT INTO log (callsign, direction, data, timestamp) VALUES (?, ?, ?, ?)");
-            $logStmt->bind_param("ssss", $callsign, $direction, $logData, $timestamp);
-            $direction = 'IN';
-            $logData = "Smart-Poll delivered: " . count($notifications) . " notifications";
-            $timestamp = date('Y-m-d H:i:s');
-            $logStmt->execute();
-        } catch (Exception $logError) {
-            // Ignore log errors - not critical
-        }
-        
     } else {
-        // Keine neuen Notifications
-        
-        // Prüfe ob kürzlich Broadcasts für andere Clients gesendet wurden
-        $stmt = $mysqli->prepare("SELECT COUNT(*) as recent FROM notifications WHERE created_at > ? AND type = 'instant'");
-        $recentTime = time() - 30;
-        $stmt->bind_param("i", $recentTime);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $recentActivity = $result->fetch_assoc()['recent'];
-        
-        if ($recentActivity > 0) {
-            // Es gab kürzlich Aktivität -> häufiger prüfen
-            $response['next_poll_seconds'] = 1;
-        }
+        // Keine neuen Notifications - einfache Response
+        // ENTFERNT: Unnötige DB-Query für recent activity check
     }
     
     echo json_encode($response);

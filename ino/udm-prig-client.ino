@@ -27,7 +27,7 @@
 #define VERSION_OFFSET 328
 #define DISPLAYTYPE_OFFSET 345  // Offset für Display-Typ
 #define SSL_VALIDATION_OFFSET 346  // Offset für SSL-Zertifikat-Validierung
-#define CPU_FREQUENCY_OFFSET 347   // Offset für CPU-Frequenz (1 byte: 0=240MHz, 1=160MHz, 2=80MHz, 3=40MHz, 4=26MHz)
+#define CPU_FREQUENCY_OFFSET 347   // Offset für CPU-Frequenz (1 byte: 0=240MHz, 1=160MHz, 2=80MHz)
 
 // Crash Log System (EEPROM 400-1023)
 #define CRASH_LOG_START_OFFSET 400
@@ -140,6 +140,10 @@ void saveCrashLogsToEEPROM(); // Forward-Deklaration für Crash Log speichern
 void clearCrashLogs(); // Forward-Deklaration für Crash Log löschen
 void handleClearCrashLogs(); // Forward-Deklaration für Crash Log löschen Handler
 void checkWiFiConnection(); // Forward-Deklaration für WiFi-Überwachung
+String getWiFiStatusText(wl_status_t status); // Forward-Deklaration für WiFi-Status-Text
+String getHTTPErrorText(int httpCode); // Forward-Deklaration für HTTP-Fehlercode-Text
+String getFormattedUptime(); // Forward-Deklaration für formatierte Uptime
+void logWiFiDiagnostics(); // Forward-Deklaration für erweiterte WiFi-Diagnose
 bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
@@ -215,9 +219,9 @@ void configureHTTPClient(HTTPClient &http, String url) {
     http.begin(url);
   }
   
-  // Standard-Timeouts
-  http.setTimeout(5000);
-  http.setConnectTimeout(3000);
+  // Standard-Timeouts (längere Timeouts für Smart-Polling)
+  http.setTimeout(10000);  // 10 Sekunden statt 5
+  http.setConnectTimeout(5000);  // 5 Sekunden statt 3
 }
 uint16_t getDisplayWhite() {
   if (displayType == DISPLAY_SSD1306) {
@@ -336,10 +340,8 @@ void drawRXTXRects() {
   bool rxActive = (now - lastRX < RS232_ACTIVE_TIME);
   bool txActive = (now - lastTX < RS232_ACTIVE_TIME);
   
-  if (rxActive || txActive) {
-    Serial.println("[DEBUG] RX/TX Status - RX:" + String(rxActive) + " TX:" + String(txActive) + 
-                   " (lastRX:" + String(lastRX) + " lastTX:" + String(lastTX) + " now:" + String(now) + ")");
-  }
+  // Entfernt: RX/TX Debug-Ausgaben für bessere Performance
+  
   int rect_width = 26;
   int rect_height = 16;
   int rect_y = 48;
@@ -393,22 +395,33 @@ void drawRXTXRects() {
 }
 
 void updateOLED() {
+  // WiFi-Signalstärke nur alle 1000ms abfragen (Performance-Optimierung)
+  static unsigned long lastWiFiRSSI = 0;
+  static int cachedRSSI = -100;
+  static int cachedStrength = 0;
+  
+  if (millis() - lastWiFiRSSI > 1000) {
+    if (WiFi.status() == WL_CONNECTED) {
+      cachedRSSI = WiFi.RSSI();
+      if (cachedRSSI > -55) cachedStrength = 4;
+      else if (cachedRSSI > -65) cachedStrength = 3;
+      else if (cachedRSSI > -75) cachedStrength = 2;
+      else if (cachedRSSI > -85) cachedStrength = 1;
+      else cachedStrength = 0;
+    } else {
+      cachedStrength = 0;
+    }
+    lastWiFiRSSI = millis();
+  }
+
   if (displayType == DISPLAY_SSD1306) {
     display_ssd1306.clearDisplay();
     display_ssd1306.setTextColor(getDisplayWhite());
     display_ssd1306.setTextSize(2);
     display_ssd1306.setCursor(0,1);
     display_ssd1306.print(callsign);
-    int rssi = WiFi.RSSI();
-    int strength = 0;
-    if (WiFi.status() == WL_CONNECTED) {
-      if (rssi > -55) strength = 4;
-      else if (rssi > -65) strength = 3;
-      else if (rssi > -75) strength = 2;
-      else if (rssi > -85) strength = 1;
-      else strength = 0;
-    }
-    drawWifiStrength(strength);
+    
+    drawWifiStrength(cachedStrength);
     display_ssd1306.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
     display_ssd1306.setTextSize(1);
     const char* serverStatus;
@@ -435,16 +448,8 @@ void updateOLED() {
     display_sh1106.setTextSize(2);
     display_sh1106.setCursor(0,1);
     display_sh1106.print(callsign);
-    int rssi = WiFi.RSSI();
-    int strength = 0;
-    if (WiFi.status() == WL_CONNECTED) {
-      if (rssi > -55) strength = 4;
-      else if (rssi > -65) strength = 3;
-      else if (rssi > -75) strength = 2;
-      else if (rssi > -85) strength = 1;
-      else strength = 0;
-    }
-    drawWifiStrength(strength);
+    
+    drawWifiStrength(cachedStrength);
     display_sh1106.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
     display_sh1106.setTextSize(1);
     const char* serverStatus;
@@ -527,10 +532,17 @@ void loadConfig() {
     saveConfig(); // Speichere Standard-Version
   }
   
-  // Validiere CPU-Frequenz-Wert
-  if(cpuFrequency > 4 || cpuFrequency == 0xFF) {
-    cpuFrequency = 0; // Fallback auf 240 MHz
-    appendMonitor("CPU-Frequenz ungültig, auf 240 MHz zurückgesetzt", "WARNING");
+  // Validiere CPU-Frequenz-Wert und korrigiere problematische Einstellungen
+  if(cpuFrequency > 2 || cpuFrequency == 0xFF) {
+    if(cpuFrequency == 3 || cpuFrequency == 4) {
+      // Alte problematische 40MHz (3) oder 26MHz (4) Einstellungen korrigieren
+      cpuFrequency = 2; // Auf 80 MHz setzen (sicher)
+      appendMonitor("CPU-Frequenz korrigiert: Problematische Einstellung auf 80 MHz geändert", "WARNING");
+      saveConfig(); // Sofort speichern um Bootloop zu verhindern
+    } else {
+      cpuFrequency = 0; // Fallback auf 240 MHz
+      appendMonitor("CPU-Frequenz ungültig, auf 240 MHz zurückgesetzt", "WARNING");
+    }
   }
 }
 
@@ -541,18 +553,12 @@ void setCpuFrequency() {
     case 0: freqMHz = 240; break;  // Standard
     case 1: freqMHz = 160; break;  // Reduziert
     case 2: freqMHz = 80; break;   // Energiesparen
-    case 3: freqMHz = 40; break;   // Sehr sparsam
-    case 4: freqMHz = 26; break;   // Backup (26 MHz ist das Minimum für WiFi)
     default: freqMHz = 240; break;
   }
   
   setCpuFrequencyMhz(freqMHz);
   
-  if(logLevel >= 1) {
-    Serial.print("CPU-Frequenz gesetzt auf: ");
-    Serial.print(freqMHz);
-    Serial.println(" MHz");
-  }
+  // Entfernt: CPU-Frequenz Serial-Ausgabe für bessere Performance
 }
 
 void handleRoot() {
@@ -705,12 +711,6 @@ void handleRoot() {
   html += "<option value=\"2\"";
   if(cpuFrequency==2) html += " selected";
   html += ">80 MHz (Energiesparen)</option>";
-  html += "<option value=\"3\"";
-  if(cpuFrequency==3) html += " selected";
-  html += ">40 MHz (Sehr sparsam)</option>";
-  html += "<option value=\"4\"";
-  if(cpuFrequency==4) html += " selected";
-  html += ">26 MHz (Backup)</option>";
   html += "</select>";
   html += "<label for=\"cpufreq\">CPU-Frequenz</label>";
   html += "<span class=\"helper-text\">Niedrigere Frequenz = weniger Stromverbrauch</span>";
@@ -1163,6 +1163,9 @@ void handleSave() {
 }
 
 void handleMonitor() {
+  // WiFi-Status vor Request-Verarbeitung prüfen
+  wl_status_t preStatus = WiFi.status();
+  
   if(logLevel == 3 && (rs232HexBuf.length() > 0 || rs232AscBuf.length() > 0)) {
     String out = "[";
     out += getTimestamp();
@@ -1178,6 +1181,11 @@ void handleMonitor() {
     rs232HexBuf = "";
     rs232AscBuf = "";
   }
+  
+  // WiFi-Status nach Verarbeitung prüfen (nur bei kritischen Änderungen loggen)
+  wl_status_t postStatus = WiFi.status();
+  // Entfernt: Debug-Ausgaben für bessere Performance
+  
   server.send(200, "text/plain", monitorBuf);
 }
 void handleMonitorClear() {
@@ -1230,13 +1238,8 @@ void handleHardwareInfo() {
   json += "\"system\":{";
   json += "\"firmwareVersion\":\"" + String(localVersion) + "\",";
   
-  // Uptime calculation
-  unsigned long uptimeMs = millis();
-  unsigned long days = uptimeMs / (1000 * 60 * 60 * 24);
-  unsigned long hours = (uptimeMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60);
-  unsigned long minutes = (uptimeMs % (1000 * 60 * 60)) / (1000 * 60);
-  unsigned long seconds = (uptimeMs % (1000 * 60)) / 1000;
-  String uptime = String(days) + "d " + String(hours) + "h " + String(minutes) + "m " + String(seconds) + "s";
+  // Uptime calculation - Format: "HH:MM:SS" oder "Xd HH:MM:SS"
+  String uptime = getFormattedUptime();
   json += "\"uptime\":\"" + uptime + "\",";
   
   // Boot reason
@@ -1443,6 +1446,68 @@ void handleClearCrashLogs() {
   server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Crash logs cleared successfully\"}");
 }
 
+// WiFi-Status in lesbaren Text umwandeln
+String getWiFiStatusText(wl_status_t status) {
+  switch(status) {
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID_AVAILABLE";
+    case WL_SCAN_COMPLETED: return "SCAN_COMPLETED";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN(" + String(status) + ")";
+  }
+}
+
+// HTTP-Fehlercode in lesbaren Text umwandeln
+String getHTTPErrorText(int httpCode) {
+  switch(httpCode) {
+    case -1: return "CONNECTION_REFUSED (-1)";
+    case -2: return "SEND_HEADER_FAILED (-2)";
+    case -3: return "SEND_PAYLOAD_FAILED (-3)";
+    case -4: return "NOT_CONNECTED (-4)";
+    case -5: return "CONNECTION_LOST (-5)";
+    case -6: return "NO_STREAM (-6)";
+    case -7: return "NO_HTTP_SERVER (-7)";
+    case -8: return "TOO_LESS_RAM (-8)";
+    case -9: return "ENCODING (-9)";
+    case -10: return "STREAM_WRITE (-10)";
+    case -11: return "READ_TIMEOUT (-11)";
+    default: return "HTTP_ERROR_" + String(httpCode);
+  }
+}
+
+// Formatierte Uptime als HH:MM:SS oder Xd HH:MM:SS
+String getFormattedUptime() {
+  unsigned long uptimeMs = millis();
+  unsigned long days = uptimeMs / (1000UL * 60 * 60 * 24);
+  unsigned long hours = (uptimeMs % (1000UL * 60 * 60 * 24)) / (1000UL * 60 * 60);
+  unsigned long minutes = (uptimeMs % (1000UL * 60 * 60)) / (1000UL * 60);
+  unsigned long seconds = (uptimeMs % (1000UL * 60)) / 1000UL;
+  
+  String uptime = "";
+  if (days > 0) {
+    uptime = String(days) + "d ";
+  }
+  
+  // HH:MM:SS Format mit führenden Nullen
+  if (hours < 10) uptime += "0";
+  uptime += String(hours) + ":";
+  if (minutes < 10) uptime += "0";
+  uptime += String(minutes) + ":";
+  if (seconds < 10) uptime += "0";
+  uptime += String(seconds);
+  
+  return uptime;
+}
+
+// Erweiterte WiFi-Diagnose
+void logWiFiDiagnostics() {
+  // Entfernt: Serial Debug-Ausgaben für bessere Performance
+  // WiFi-Diagnose läuft weiterhin, aber ohne Serial-Output
+}
+
 // WiFi-Verbindungsüberwachung und automatische Wiederherstellung
 void checkWiFiConnection() {
   unsigned long currentTime = millis();
@@ -1455,8 +1520,15 @@ void checkWiFiConnection() {
   lastWiFiCheck = currentTime;
   
   // Prüfe WiFi-Status
-  if (WiFi.status() != WL_CONNECTED || forceWiFiReconnect) {
-    appendMonitor("WiFi-Verbindung verloren (Status: " + String(WiFi.status()) + "). Versuche Wiederverbindung...", "WARNING");
+  wl_status_t currentStatus = WiFi.status();
+  if (currentStatus != WL_CONNECTED || forceWiFiReconnect) {
+    
+    // Erweiterte Diagnose bei Verbindungsverlust
+    String statusText = getWiFiStatusText(currentStatus);
+    appendMonitor("WiFi-Verbindung verloren (Status: " + statusText + "/" + String(currentStatus) + "). Versuche Wiederverbindung...", "WARNING");
+    
+    // Detaillierte WiFi-Diagnose ausgeben
+    logWiFiDiagnostics();
     
     wifiReconnectAttempts++;
     
@@ -1736,6 +1808,25 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
+  // EEPROM früh initialisieren für CPU-Frequenz-Check
+  EEPROM.begin(EEPROM_SIZE);
+  
+  // Frühe Überprüfung der CPU-Frequenz vor loadConfig()
+  uint8_t savedCpuFreq = EEPROM.read(CPU_FREQUENCY_OFFSET);
+  if(savedCpuFreq >= 3) { // 3=40MHz, 4=26MHz (beide problematisch)
+    Serial.println("BOOTLOOP-SCHUTZ: Problematische CPU-Frequenz erkannt!");
+    Serial.print("Gespeicherte Frequenz-ID: ");
+    Serial.println(savedCpuFreq);
+    
+    // Auf sichere 80 MHz (Index 2) setzen
+    EEPROM.write(CPU_FREQUENCY_OFFSET, 2);
+    EEPROM.commit();
+    
+    Serial.println("CPU-Frequenz auf 80 MHz korrigiert. Neustart...");
+    delay(2000);
+    ESP.restart();
+  }
+
   loadConfig();
   
   // CPU-Frequenz basierend auf Konfiguration setzen
@@ -1905,9 +1996,9 @@ void loop() {
     size_t freeHeap = ESP.getFreeHeap();
     size_t minHeap = ESP.getMinFreeHeap();
     size_t stackFree = uxTaskGetStackHighWaterMark(NULL);
-    unsigned long uptimeSeconds = millis() / 1000;
+    String formattedUptime = getFormattedUptime();
     
-    appendMonitor("System OK - Heap:" + String(freeHeap) + "B Stack:" + String(stackFree) + " Uptime:" + String(uptimeSeconds) + "s", "INFO");
+    appendMonitor("System OK - Heap:" + String(freeHeap) + "B Stack:" + String(stackFree) + " Uptime:" + formattedUptime, "INFO");
     
     // Erweiterte Systemdiagnose bei niedrigem Speicher
     if (freeHeap < 20000) { // Warnung unter 20KB
@@ -1925,11 +2016,52 @@ void loop() {
     }
     lastMemoryCheck = now;
   }
+
+  // WiFi-Verbindung alle 5 Sekunden überprüfen
+  static unsigned long lastWiFiCheck = 0;
+  static wl_status_t lastWiFiStatus = WL_DISCONNECTED;
+  if (millis() - lastWiFiCheck > 5000) {
+    wl_status_t currentStatus = WiFi.status();
+    
+    // Wenn sich der WiFi-Status geändert hat
+    if (currentStatus != lastWiFiStatus) {
+      String statusMsg = "WiFi status changed: " + getWiFiStatusText(lastWiFiStatus) + 
+                        " -> " + getWiFiStatusText(currentStatus);
+      
+      // Entfernt: Serial Debug-Ausgaben für bessere Performance
+      
+      // Bei Verbindungsverlust zusätzliche Diagnose
+      if (lastWiFiStatus == WL_CONNECTED && currentStatus != WL_CONNECTED) {
+        appendMonitor("WiFi-Verbindung verloren: " + getWiFiStatusText(currentStatus), "WARNING");
+        saveCrashLog("WiFi connection lost: " + statusMsg + " RSSI: " + String(WiFi.RSSI()));
+      }
+      
+      // Bei erfolgreicher Wiederverbindung
+      if (lastWiFiStatus != WL_CONNECTED && currentStatus == WL_CONNECTED) {
+        appendMonitor("WiFi-Verbindung wiederhergestellt. IP: " + WiFi.localIP().toString(), "INFO");
+      }
+      
+      lastWiFiStatus = currentStatus;
+    }
+    
+    lastWiFiCheck = millis();
+  }
   
   // **OPTIMIERT: WebServer nur alle 50ms bearbeiten**
   static unsigned long lastServerHandle = 0;
   if (millis() - lastServerHandle > 50) {
+    // WiFi-Status vor WebServer-Verarbeitung prüfen
+    wl_status_t preServerStatus = WiFi.status();
+    
     server.handleClient();
+    
+    // WiFi-Status nach WebServer-Verarbeitung prüfen (ohne Serial-Debug)
+    wl_status_t postServerStatus = WiFi.status();
+    if(preServerStatus != postServerStatus) {
+      // WiFi-Status hat sich geändert, aber keine Serial-Ausgabe mehr
+      logWiFiDiagnostics();
+    }
+    
     lastServerHandle = millis();
   }
 
@@ -1993,16 +2125,30 @@ void loop() {
         sslCertificateError = false;
         connectionError = false;
       } else if(httpCode < 0) {
+        // WiFi-Status bei HTTP-Fehlern überprüfen
+        wl_status_t currentWiFiStatus = WiFi.status();
+        String wifiStatusText = getWiFiStatusText(currentWiFiStatus);
+        String httpErrorText = getHTTPErrorText(httpCode);
+        
         String url = String(serverUrl) + "/api/senddata.php";
         if(url.startsWith("https://") && sslValidation) {
-          appendMonitor("SSL-Zertifikat Validierungsfehler: " + String(httpCode), "ERROR");
-          saveCrashLog("SSL cert validation error: " + String(httpCode));
+          String errorMsg = "SSL-Zertifikat Validierungsfehler: " + httpErrorText + 
+                           " | WiFi: " + wifiStatusText;
+          appendMonitor(errorMsg, "ERROR");
+          saveCrashLog("SSL cert validation error: " + httpErrorText + " WiFi: " + wifiStatusText);
           sslCertificateError = true;
           authenticationError = false;
           connectionError = false;
         } else {
-          appendMonitor("HTTP Timeout oder Verbindungsfehler: " + String(httpCode), "ERROR");
-          saveCrashLog("HTTP connection error: " + String(httpCode));
+          String errorMsg = "HTTP Verbindungsfehler: " + httpErrorText + 
+                           " | WiFi: " + wifiStatusText + 
+                           " | RSSI: " + String(WiFi.RSSI()) + "dBm";
+          appendMonitor(errorMsg, "ERROR");
+          saveCrashLog("HTTP connection error: " + httpErrorText + " WiFi: " + wifiStatusText + " RSSI: " + String(WiFi.RSSI()));
+          
+          // Bei Verbindungsfehlern detaillierte WiFi-Diagnose (ohne Serial-Output)
+          logWiFiDiagnostics();
+          
           authenticationError = false;
           sslCertificateError = false;
           connectionError = true;
@@ -2010,8 +2156,13 @@ void loop() {
           forceWiFiReconnect = true;
         }
       } else {
-        appendMonitor("HTTP POST Fehler: " + String(httpCode), "ERROR");
-        saveCrashLog("HTTP POST error: " + String(httpCode));
+        wl_status_t currentWiFiStatus = WiFi.status();
+        String wifiStatusText = getWiFiStatusText(currentWiFiStatus);
+        String errorMsg = "HTTP POST Fehler: " + String(httpCode) + 
+                         " | WiFi: " + wifiStatusText;
+        
+        appendMonitor(errorMsg, "ERROR");
+        saveCrashLog("HTTP POST error: " + String(httpCode) + " WiFi: " + wifiStatusText);
         authenticationError = false;
         sslCertificateError = false;
         connectionError = true;
@@ -2029,6 +2180,16 @@ void loop() {
   // Smart-Polling: Adaptives HTTP-Polling für Hoststar
   static unsigned long lastFetch = 0;
   if (millis() - lastFetch > smartPollInterval && strlen(serverUrl) > 0) {
+    
+    // **PRE-CHECK: WiFi-Status vor HTTP-Request prüfen**
+    wl_status_t preStatus = WiFi.status();
+    if (preStatus != WL_CONNECTED) {
+      appendMonitor("Smart-Polling übersprungen - WiFi nicht verbunden: " + getWiFiStatusText(preStatus), "WARNING");
+      logWiFiDiagnostics();
+      forceWiFiReconnect = true;
+      smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Interval verlängern
+      return; // Polling überspringen
+    }
     
     // **OPTIMIERT: Task-Kooperation für Stabilität**
     yield();
@@ -2131,8 +2292,23 @@ void loop() {
         authenticationError = false;
         connectionError = false;
       } else {
-        appendMonitor("Smart-Polling Timeout/Verbindungsfehler: " + String(httpCode), "ERROR");
-        saveCrashLog("Smart-Polling connection error: " + String(httpCode));
+        // HTTP-Verbindungsfehler mit detaillierter WiFi-Diagnose
+        wl_status_t currentWiFiStatus = WiFi.status();
+        String wifiStatusText = getWiFiStatusText(currentWiFiStatus);
+        String httpErrorText = getHTTPErrorText(httpCode);
+        
+        String errorMsg = "Smart-Polling Verbindungsfehler: " + httpErrorText + 
+                         " | WiFi: " + wifiStatusText + 
+                         " | RSSI: " + String(WiFi.RSSI()) + "dBm";
+        
+        appendMonitor(errorMsg, "ERROR");
+        saveCrashLog("Smart-Polling connection error: " + httpErrorText + " WiFi: " + wifiStatusText + " RSSI: " + String(WiFi.RSSI()));
+        
+        // Bei kritischen Verbindungsfehlern erweiterte WiFi-Diagnose (ohne Serial-Output)
+        if(httpCode == -1 || httpCode == -4 || httpCode == -5) {
+          logWiFiDiagnostics();
+        }
+        
         sslCertificateError = false;
         authenticationError = false;
         connectionError = true; // Verbindungsfehler setzen
@@ -2151,6 +2327,15 @@ void loop() {
     }
     
     http.end(); // **WICHTIG: HTTPClient korrekt schließen**
+    
+    // **POST-CHECK: WiFi-Status nach HTTP-Request prüfen**
+    wl_status_t postStatus = WiFi.status();
+    if (postStatus != WL_CONNECTED) {
+      appendMonitor("WiFi-Verbindung nach Smart-Polling verloren: " + getWiFiStatusText(postStatus), "ERROR");
+      logWiFiDiagnostics();
+      forceWiFiReconnect = true;
+    }
+    
     lastFetch = millis();
     
     // Watchdog nach HTTP-Operation zurücksetzen
