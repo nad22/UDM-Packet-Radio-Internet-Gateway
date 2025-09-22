@@ -99,6 +99,7 @@ String decodeBase64Simple(String input); // Forward-Deklaration für Smart-Polli
 String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodierung
 void handleOTACheck(); // Forward-Deklaration für OTA
 void handleOTAUpdate(); // Forward-Deklaration für OTA
+void handleHardwareInfo(); // Forward-Deklaration für Hardware Info API
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
 
@@ -504,6 +505,8 @@ void handleRoot() {
       .log-default { color: #eee !important; }
       .log-rs232 { color: #ffecb3 !important; font-family:monospace; }
       .container { max-width: 1200px; }
+      .wifi-signal-bar { background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden; }
+      .wifi-signal-fill { height: 100%; border-radius: 10px; transition: width 0.5s ease; }
       @media (max-width: 768px) { body { padding: 10px; } }
     </style>
   </head>
@@ -512,8 +515,9 @@ void handleRoot() {
   html += String(localVersion);
   html += R"=====(</h4>
     <ul id="tabs-swipe-demo" class="tabs">
-      <li class="tab col s3"><a class="active" href="#config">Config</a></li>
-      <li class="tab col s3"><a href="#monitor">Monitor</a></li>
+      <li class="tab col s4"><a class="active" href="#hardware">Hardware</a></li>
+      <li class="tab col s4"><a href="#monitor">Monitor</a></li>
+      <li class="tab col s4"><a href="#config">Config</a></li>
     </ul>
     <div id="config" class="col s12">
       <form id="configform" action='/save' method='post'>
@@ -615,21 +619,6 @@ void handleRoot() {
         </button>
       </form>
       
-      <!-- OTA Update Status -->
-      <h5 style="margin-top:2em;">Firmware Update</h5>
-      <div class="card">
-        <div class="card-content">
-          <p><strong>Aktuelle Version:</strong> )=====";
-  html += String(localVersion);
-  html += R"=====(</p>
-          <p><strong>OTA Repository:</strong><br><small>)=====";
-  html += String(otaRepoUrl);
-  html += R"=====(</small></p>
-          <button class="btn blue" onclick="checkOTAUpdate()">Nach Updates suchen</button>
-          <div id="otaStatus" style="margin-top: 10px;"></div>
-        </div>
-      </div>
-      
       <div class="section">
         (c) www.pukepals.com, 73 de AT1NAD
         <br><small>Auch erreichbar unter: <b>http://udmprig-client.local/</b></small>
@@ -655,6 +644,110 @@ void handleRoot() {
         </div>
       </div>
     </div>
+    
+    <div id="hardware" class="col s12">
+      <h5>Hardware Information</h5>
+      
+      <!-- WiFi Status Section -->
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">wifi</i>WiFi Status</span>
+          <div class="row">
+            <div class="col s6">
+              <p><strong>SSID:</strong> <span id="wifiSSID">-</span></p>
+              <p><strong>IP Address:</strong> <span id="wifiIP">-</span></p>
+              <p><strong>MAC Address:</strong> <span id="wifiMAC">-</span></p>
+            </div>
+            <div class="col s6">
+              <p><strong>Signal Strength:</strong> <span id="wifiRSSI">-</span> dBm</p>
+              <div style="margin: 10px 0;">
+                <div class="wifi-signal-bar">
+                  <div id="wifiSignalBar" class="wifi-signal-fill" style="background: linear-gradient(90deg, #f44336 0%, #ff9800 40%, #4caf50 70%); width: 0%;"></div>
+                </div>
+                <small style="color: #666;"><span id="wifiSignalText">Signal Quality: -</span></small>
+              </div>
+              <p><strong>Connection Status:</strong> <span id="wifiStatus">-</span></p>
+              <p><strong>Gateway:</strong> <span id="wifiGateway">-</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- ESP32 Chip Information -->
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">memory</i>ESP32 Chip Info</span>
+          <div class="row">
+            <div class="col s6">
+              <p><strong>Chip Model:</strong> <span id="chipModel">-</span></p>
+              <p><strong>Chip Revision:</strong> <span id="chipRevision">-</span></p>
+              <p><strong>CPU Frequency:</strong> <span id="cpuFreq">-</span> MHz</p>
+            </div>
+            <div class="col s6">
+              <p><strong>Flash Size:</strong> <span id="flashSize">-</span> MB</p>
+              <p><strong>Flash Speed:</strong> <span id="flashSpeed">-</span> MHz</p>
+              <p><strong>SDK Version:</strong> <span id="sdkVersion">-</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Memory Information -->
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">storage</i>Memory Usage</span>
+          <div class="row">
+            <div class="col s6">
+              <p><strong>Free Heap:</strong> <span id="freeHeap">-</span> KB</p>
+              <p><strong>Min Free Heap:</strong> <span id="minFreeHeap">-</span> KB</p>
+              <p><strong>Heap Size:</strong> <span id="heapSize">-</span> KB</p>
+            </div>
+            <div class="col s6">
+              <p><strong>Free PSRAM:</strong> <span id="freePSRAM">-</span> KB</p>
+              <p><strong>PSRAM Size:</strong> <span id="psramSize">-</span> KB</p>
+              <p><strong>Flash Usage:</strong> <span id="flashUsage">-</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- System Information -->
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">info</i>System Info</span>
+          <div class="row">
+            <div class="col s6">
+              <p><strong>Firmware Version:</strong> <span id="firmwareVersion">-</span></p>
+              <p><strong>Uptime:</strong> <span id="uptime">-</span></p>
+              <p><strong>Boot Reason:</strong> <span id="bootReason">-</span></p>
+            </div>
+            <div class="col s6">
+              <p><strong>Temperature:</strong> <span id="temperature">-</span>°C</p>
+              <p><strong>Display Type:</strong> <span id="displayType">-</span></p>
+              <p><strong>SSL Validation:</strong> <span id="sslValidation">-</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Firmware Update Section -->
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">system_update</i>Firmware Update</span>
+          <p><strong>Aktuelle Version:</strong> )=====";
+  html += String(localVersion);
+  html += R"=====(</p>
+          <p><strong>OTA Repository:</strong><br><small>)=====";
+  html += String(otaRepoUrl);
+  html += R"=====(</small></p>
+          <button class="btn blue" onclick="checkOTAUpdate()">Nach Updates suchen</button>
+          <div id="otaStatus" style="margin-top: 10px;"></div>
+        </div>
+      </div>
+      
+      <button class="btn blue" onclick="updateHardwareInfo()">Refresh Info</button>
+    </div>
+    
     <div id="monitor" class="col s12">
       <h6>Serieller Monitor</h6>
       <pre id="monitorArea" style="height:350px;overflow:auto;"></pre>
@@ -690,7 +783,81 @@ void handleRoot() {
         function clearMonitor() {
           fetch('/monitor_clear').then(()=>updateMonitor());
         }
-        window.onload = updateMonitor;
+        
+        function updateHardwareInfo() {
+          fetch('/api/hardware_info').then(r=>r.json()).then(data=>{
+            document.getElementById('wifiSSID').textContent = data.wifi.ssid || '-';
+            document.getElementById('wifiIP').textContent = data.wifi.ip || '-';
+            document.getElementById('wifiMAC').textContent = data.wifi.mac || '-';
+            document.getElementById('wifiRSSI').textContent = data.wifi.rssi || '-';
+            document.getElementById('wifiStatus').textContent = data.wifi.status || '-';
+            document.getElementById('wifiGateway').textContent = data.wifi.gateway || '-';
+            
+            // Update WiFi signal strength bar
+            const rssi = parseInt(data.wifi.rssi) || -100;
+            let signalPercent = 0;
+            let signalQuality = 'Poor';
+            
+            if (rssi >= -50) {
+              signalPercent = 100;
+              signalQuality = 'Excellent';
+            } else if (rssi >= -60) {
+              signalPercent = 80;
+              signalQuality = 'Very Good';
+            } else if (rssi >= -70) {
+              signalPercent = 60;
+              signalQuality = 'Good';
+            } else if (rssi >= -80) {
+              signalPercent = 40;
+              signalQuality = 'Fair';
+            } else if (rssi >= -90) {
+              signalPercent = 20;
+              signalQuality = 'Weak';
+            } else {
+              signalPercent = 5;
+              signalQuality = 'Very Weak';
+            }
+            
+            document.getElementById('wifiSignalBar').style.width = signalPercent + '%';
+            document.getElementById('wifiSignalText').textContent = 'Signal Quality: ' + signalQuality + ' (' + signalPercent + '%)';
+            
+            document.getElementById('chipModel').textContent = data.chip.model || '-';
+            document.getElementById('chipRevision').textContent = data.chip.revision || '-';
+            document.getElementById('cpuFreq').textContent = data.chip.cpuFreq || '-';
+            document.getElementById('flashSize').textContent = data.chip.flashSize || '-';
+            document.getElementById('flashSpeed').textContent = data.chip.flashSpeed || '-';
+            document.getElementById('sdkVersion').textContent = data.chip.sdkVersion || '-';
+            
+            document.getElementById('freeHeap').textContent = data.memory.freeHeap || '-';
+            document.getElementById('minFreeHeap').textContent = data.memory.minFreeHeap || '-';
+            document.getElementById('heapSize').textContent = data.memory.heapSize || '-';
+            document.getElementById('freePSRAM').textContent = data.memory.freePSRAM || '-';
+            document.getElementById('psramSize').textContent = data.memory.psramSize || '-';
+            document.getElementById('flashUsage').textContent = data.memory.flashUsage || '-';
+            
+            document.getElementById('firmwareVersion').textContent = data.system.firmwareVersion || '-';
+            document.getElementById('uptime').textContent = data.system.uptime || '-';
+            document.getElementById('bootReason').textContent = data.system.bootReason || '-';
+            document.getElementById('temperature').textContent = data.system.temperature || '-';
+            document.getElementById('displayType').textContent = data.system.displayType || '-';
+            document.getElementById('sslValidation').textContent = data.system.sslValidation || '-';
+          }).catch(err => {
+            console.error('Error fetching hardware info:', err);
+          });
+        }
+        
+        // Auto-refresh hardware info every 5 seconds when on hardware tab
+        setInterval(() => {
+          const hardwareTab = document.querySelector('a[href="#hardware"]');
+          if (hardwareTab && hardwareTab.classList.contains('active')) {
+            updateHardwareInfo();
+          }
+        }, 5000);
+        
+        window.onload = function() {
+          updateMonitor();
+          updateHardwareInfo();
+        };
       </script>
       <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -826,11 +993,98 @@ void handleMonitorClear() {
   server.send(200, "text/plain", "OK");
 }
 
+void handleHardwareInfo() {
+  String json = "{";
+  
+  // WiFi Information
+  json += "\"wifi\":{";
+  json += "\"ssid\":\"" + String(WiFi.SSID()) + "\",";
+  json += "\"ip\":\"" + WiFi.localIP().toString() + "\",";
+  json += "\"mac\":\"" + WiFi.macAddress() + "\",";
+  json += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+  json += "\"status\":\"" + String(WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected") + "\",";
+  json += "\"gateway\":\"" + WiFi.gatewayIP().toString() + "\"";
+  json += "},";
+  
+  // ESP32 Chip Information  
+  json += "\"chip\":{";
+  json += "\"model\":\"" + String(ESP.getChipModel()) + "\",";
+  json += "\"revision\":" + String(ESP.getChipRevision()) + ",";
+  json += "\"cpuFreq\":" + String(ESP.getCpuFreqMHz()) + ",";
+  json += "\"flashSize\":" + String(ESP.getFlashChipSize() / (1024 * 1024)) + ",";
+  json += "\"flashSpeed\":" + String(ESP.getFlashChipSpeed() / 1000000) + ",";
+  json += "\"sdkVersion\":\"" + String(ESP.getSdkVersion()) + "\"";
+  json += "},";
+  
+  // Memory Information
+  json += "\"memory\":{";
+  json += "\"freeHeap\":" + String(ESP.getFreeHeap() / 1024) + ",";
+  json += "\"minFreeHeap\":" + String(ESP.getMinFreeHeap() / 1024) + ",";
+  json += "\"heapSize\":" + String(ESP.getHeapSize() / 1024) + ",";
+  json += "\"freePSRAM\":" + String(ESP.getFreePsram() / 1024) + ",";
+  json += "\"psramSize\":" + String(ESP.getPsramSize() / 1024) + ",";
+  
+  // Calculate flash usage
+  size_t sketchSize = ESP.getSketchSize();
+  size_t totalFlash = ESP.getFlashChipSize();
+  float flashUsagePercent = (float)sketchSize / totalFlash * 100;
+  json += "\"flashUsage\":\"" + String(sketchSize / 1024) + " KB (" + String(flashUsagePercent, 1) + "%)\"";
+  json += "},";
+  
+  // System Information
+  json += "\"system\":{";
+  json += "\"firmwareVersion\":\"" + String(localVersion) + "\",";
+  
+  // Uptime calculation
+  unsigned long uptimeMs = millis();
+  unsigned long days = uptimeMs / (1000 * 60 * 60 * 24);
+  unsigned long hours = (uptimeMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60);
+  unsigned long minutes = (uptimeMs % (1000 * 60 * 60)) / (1000 * 60);
+  unsigned long seconds = (uptimeMs % (1000 * 60)) / 1000;
+  String uptime = String(days) + "d " + String(hours) + "h " + String(minutes) + "m " + String(seconds) + "s";
+  json += "\"uptime\":\"" + uptime + "\",";
+  
+  // Boot reason
+  String bootReason = "";
+  esp_reset_reason_t reason = esp_reset_reason();
+  switch (reason) {
+    case ESP_RST_UNKNOWN: bootReason = "Unknown"; break;
+    case ESP_RST_POWERON: bootReason = "Power-on"; break;
+    case ESP_RST_EXT: bootReason = "External pin"; break;
+    case ESP_RST_SW: bootReason = "Software reset"; break;
+    case ESP_RST_PANIC: bootReason = "Panic/exception"; break;
+    case ESP_RST_INT_WDT: bootReason = "Interrupt watchdog"; break;
+    case ESP_RST_TASK_WDT: bootReason = "Task watchdog"; break;
+    case ESP_RST_WDT: bootReason = "Other watchdog"; break;
+    case ESP_RST_DEEPSLEEP: bootReason = "Deep sleep"; break;
+    case ESP_RST_BROWNOUT: bootReason = "Brownout"; break;
+    case ESP_RST_SDIO: bootReason = "SDIO"; break;
+    default: bootReason = "Other"; break;
+  }
+  json += "\"bootReason\":\"" + bootReason + "\",";
+  
+  // Temperature (approximation)
+  json += "\"temperature\":\"" + String(temperatureRead(), 1) + "\",";
+  
+  // Display type
+  String dispType = (displayType == DISPLAY_SH1106G) ? "SH1106G" : "SSD1306";
+  json += "\"displayType\":\"" + dispType + "\",";
+  
+  // SSL Validation
+  json += "\"sslValidation\":\"" + String(sslValidation ? "Enabled" : "Disabled") + "\"";
+  json += "}";
+  
+  json += "}";
+  
+  server.send(200, "application/json", json);
+}
+
 void startWebserver() {
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/monitor", handleMonitor);
   server.on("/monitor_clear", handleMonitorClear);
+  server.on("/api/hardware_info", handleHardwareInfo);
   server.on("/ota-check", handleOTACheck);
   server.on("/ota-update", HTTP_POST, handleOTAUpdate);
   server.begin();
