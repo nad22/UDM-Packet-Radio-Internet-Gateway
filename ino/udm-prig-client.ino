@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
+#include <Adafruit_SSD1306.h>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <EEPROM.h>
@@ -13,7 +14,7 @@
 
 // Watchdog-Timer Konfiguration
 #define WDT_TIMEOUT 30  // 30 Sekunden Watchdog-Timeout
-#define EEPROM_SIZE 345
+#define EEPROM_SIZE 346  // Erweitert für Display-Typ
 #define SSID_OFFSET 0
 #define PASS_OFFSET 64
 #define SERVERURL_OFFSET 128
@@ -23,6 +24,7 @@
 #define LOGLEVEL_OFFSET 198
 #define OTAURL_OFFSET 200
 #define VERSION_OFFSET 328
+#define DISPLAYTYPE_OFFSET 345  // Neuer Offset für Display-Typ
 
 #define LED_PIN 2
 
@@ -31,7 +33,14 @@
 #define OLED_RESET    -1
 #define OLED_LINE_LEN 33
 #define OLED_LINE_DIVIDER "---------------------------------"
-Adafruit_SH1106G display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Display-Typen
+#define DISPLAY_SH1106G 0
+#define DISPLAY_SSD1306 1
+
+// Display-Objekte (nur eins wird verwendet)
+Adafruit_SH1106G display_sh1106(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+Adafruit_SSD1306 display_ssd1306(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 HardwareSerial RS232(1);
 
@@ -55,6 +64,7 @@ char otaRepoUrl[128] = "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio
 uint16_t serverPort = 80;
 uint32_t baudrate = 2400;
 uint8_t logLevel = 1;
+uint8_t displayType = DISPLAY_SSD1306; // Default: SSD1306 (kleineres Display)
 bool apActive = false;
 bool authenticationError = false;
 
@@ -86,52 +96,126 @@ String decodeBase64Simple(String input); // Forward-Deklaration für Smart-Polli
 String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodierung
 void handleOTACheck(); // Forward-Deklaration für OTA
 void handleOTAUpdate(); // Forward-Deklaration für OTA
+bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
+
+// Display-Initialisierung basierend auf displayType
+bool initDisplay() {
+  if (displayType == DISPLAY_SSD1306) {
+    if (!display_ssd1306.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+      return false;
+    }
+    display_ssd1306.clearDisplay();
+    display_ssd1306.display();
+  } else {
+    if (!display_sh1106.begin(0x3C)) {
+      return false;
+    }
+    display_sh1106.clearDisplay();
+    display_sh1106.display();
+  }
+  return true;
+}
+
+// Hilfsfunktion für Display-spezifische Farben
+uint16_t getDisplayWhite() {
+  if (displayType == DISPLAY_SSD1306) {
+    return SSD1306_WHITE;
+  } else {
+    return SH110X_WHITE;
+  }
+}
 
 void bootPrint(const String &msg) {
   static int line = 0;
-  display.setTextSize(1);
-  display.setTextColor(SH110X_WHITE);
-  display.setCursor(0, 8 * line++);
-  String showMsg = msg.substring(0, OLED_LINE_LEN); // max 33 Zeichen
-  display.print(showMsg);
-  display.display();
-  if (line >= 8) {
-    display.clearDisplay();
-    line = 0;
+  
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.setTextSize(1);
+    display_ssd1306.setTextColor(getDisplayWhite());
+    display_ssd1306.setCursor(0, 8 * line++);
+    String showMsg = msg.substring(0, OLED_LINE_LEN); // max 33 Zeichen
+    display_ssd1306.print(showMsg);
+    display_ssd1306.display();
+    if (line >= 8) {
+      display_ssd1306.clearDisplay();
+      line = 0;
+    }
+  } else {
+    display_sh1106.setTextSize(1);
+    display_sh1106.setTextColor(getDisplayWhite());
+    display_sh1106.setCursor(0, 8 * line++);
+    String showMsg = msg.substring(0, OLED_LINE_LEN); // max 33 Zeichen
+    display_sh1106.print(showMsg);
+    display_sh1106.display();
+    if (line >= 8) {
+      display_sh1106.clearDisplay();
+      line = 0;
+    }
   }
   delay(300);
 }
 
 void showOTAUpdateScreen(const char* text, float progress = -1) {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SH110X_WHITE);
-  display.setCursor(2, 13);
-  display.print("Firmware-Update");
-  display.setCursor(2, 25);
-  display.print(String(text).substring(0, OLED_LINE_LEN));
-  if(progress >= 0.0) {
-    int barWidth = 112, barHeight = 10, barX = 8, barY = 40;
-    display.drawRect(barX, barY, barWidth, barHeight, SH110X_WHITE);
-    int filled = (int)(barWidth * progress);
-    if(filled > 0)
-      display.fillRect(barX+1, barY+1, filled-2, barHeight-2, SH110X_WHITE);
-    display.setCursor(48, 54);
-    display.print(int(progress*100));
-    display.print("%");
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.clearDisplay();
+    display_ssd1306.setTextSize(1);
+    display_ssd1306.setTextColor(getDisplayWhite());
+    display_ssd1306.setCursor(2, 13);
+    display_ssd1306.print("Firmware-Update");
+    display_ssd1306.setCursor(2, 25);
+    display_ssd1306.print(String(text).substring(0, OLED_LINE_LEN));
+    if(progress >= 0.0) {
+      int barWidth = 112, barHeight = 10, barX = 8, barY = 40;
+      display_ssd1306.drawRect(barX, barY, barWidth, barHeight, getDisplayWhite());
+      int filled = (int)(barWidth * progress);
+      if(filled > 0)
+        display_ssd1306.fillRect(barX+1, barY+1, filled-2, barHeight-2, getDisplayWhite());
+      display_ssd1306.setCursor(48, 54);
+      display_ssd1306.print(int(progress*100));
+      display_ssd1306.print("%");
+    }
+    display_ssd1306.display();
+  } else {
+    display_sh1106.clearDisplay();
+    display_sh1106.setTextSize(1);
+    display_sh1106.setTextColor(getDisplayWhite());
+    display_sh1106.setCursor(2, 13);
+    display_sh1106.print("Firmware-Update");
+    display_sh1106.setCursor(2, 25);
+    display_sh1106.print(String(text).substring(0, OLED_LINE_LEN));
+    if(progress >= 0.0) {
+      int barWidth = 112, barHeight = 10, barX = 8, barY = 40;
+      display_sh1106.drawRect(barX, barY, barWidth, barHeight, getDisplayWhite());
+      int filled = (int)(barWidth * progress);
+      if(filled > 0)
+        display_sh1106.fillRect(barX+1, barY+1, filled-2, barHeight-2, getDisplayWhite());
+      display_sh1106.setCursor(48, 54);
+      display_sh1106.print(int(progress*100));
+      display_sh1106.print("%");
+    }
+    display_sh1106.display();
   }
-  display.display();
 }
 
 void drawWifiStrength(int strength) {
   int x = SCREEN_WIDTH - 22;
   int y = 0;
-  display.drawRect(x, y+4, 2, 8, SH110X_WHITE);
-  for(int i=0;i<4;i++) {
-    if(strength>i)
-      display.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, SH110X_WHITE);
-    else
-      display.drawRect(x+4+i*3, y+12-2*i, 2, 2+2*i, SH110X_WHITE);
+  
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.drawRect(x, y+4, 2, 8, getDisplayWhite());
+    for(int i=0;i<4;i++) {
+      if(strength>i)
+        display_ssd1306.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
+      else
+        display_ssd1306.drawRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
+    }
+  } else {
+    display_sh1106.drawRect(x, y+4, 2, 8, getDisplayWhite());
+    for(int i=0;i<4;i++) {
+      if(strength>i)
+        display_sh1106.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
+      else
+        display_sh1106.drawRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
+    }
   }
 }
 
@@ -141,60 +225,119 @@ void drawRXTXRects() {
   int rect_y = 48;
   int rx_x = 16;
   int tx_x = 80;
+  
+  uint16_t white = getDisplayWhite();
+  uint16_t black = (displayType == DISPLAY_SSD1306) ? SSD1306_BLACK : SH110X_BLACK;
 
-  display.setTextSize(1);
-  display.setTextColor(SH110X_WHITE);
-  display.setCursor(rx_x+6, rect_y-10);
-  display.print("RX");
-  display.setCursor(tx_x+6, rect_y-10);
-  display.print("TX");
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.setTextSize(1);
+    display_ssd1306.setTextColor(white);
+    display_ssd1306.setCursor(rx_x+6, rect_y-10);
+    display_ssd1306.print("RX");
+    display_ssd1306.setCursor(tx_x+6, rect_y-10);
+    display_ssd1306.print("TX");
 
-  if (millis() - lastRX < RS232_ACTIVE_TIME) {
-    display.fillRect(rx_x, rect_y, rect_width, rect_height, SH110X_WHITE);
-    display.drawRect(rx_x, rect_y, rect_width, rect_height, SH110X_BLACK);
+    if (millis() - lastRX < RS232_ACTIVE_TIME) {
+      display_ssd1306.fillRect(rx_x, rect_y, rect_width, rect_height, white);
+      display_ssd1306.drawRect(rx_x, rect_y, rect_width, rect_height, black);
+    } else {
+      display_ssd1306.drawRect(rx_x, rect_y, rect_width, rect_height, white);
+    }
+    if (millis() - lastTX < RS232_ACTIVE_TIME) {
+      display_ssd1306.fillRect(tx_x, rect_y, rect_width, rect_height, white);
+      display_ssd1306.drawRect(tx_x, rect_y, rect_width, rect_height, black);
+    } else {
+      display_ssd1306.drawRect(tx_x, rect_y, rect_width, rect_height, white);
+    }
   } else {
-    display.drawRect(rx_x, rect_y, rect_width, rect_height, SH110X_WHITE);
-  }
-  if (millis() - lastTX < RS232_ACTIVE_TIME) {
-    display.fillRect(tx_x, rect_y, rect_width, rect_height, SH110X_WHITE);
-    display.drawRect(tx_x, rect_y, rect_width, rect_height, SH110X_BLACK);
-  } else {
-    display.drawRect(tx_x, rect_y, rect_width, rect_height, SH110X_WHITE);
+    display_sh1106.setTextSize(1);
+    display_sh1106.setTextColor(white);
+    display_sh1106.setCursor(rx_x+6, rect_y-10);
+    display_sh1106.print("RX");
+    display_sh1106.setCursor(tx_x+6, rect_y-10);
+    display_sh1106.print("TX");
+
+    if (millis() - lastRX < RS232_ACTIVE_TIME) {
+      display_sh1106.fillRect(rx_x, rect_y, rect_width, rect_height, white);
+      display_sh1106.drawRect(rx_x, rect_y, rect_width, rect_height, black);
+    } else {
+      display_sh1106.drawRect(rx_x, rect_y, rect_width, rect_height, white);
+    }
+    if (millis() - lastTX < RS232_ACTIVE_TIME) {
+      display_sh1106.fillRect(tx_x, rect_y, rect_width, rect_height, white);
+      display_sh1106.drawRect(tx_x, rect_y, rect_width, rect_height, black);
+    } else {
+      display_sh1106.drawRect(tx_x, rect_y, rect_width, rect_height, white);
+    }
   }
 }
 
 void updateOLED() {
-  display.clearDisplay();
-  display.setTextColor(SH110X_WHITE);
-  display.setTextSize(2);
-  display.setCursor(0,0);
-  display.print(callsign);
-  int rssi = WiFi.RSSI();
-  int strength = 0;
-  if (WiFi.status() == WL_CONNECTED) {
-    if (rssi > -55) strength = 4;
-    else if (rssi > -65) strength = 3;
-    else if (rssi > -75) strength = 2;
-    else if (rssi > -85) strength = 1;
-    else strength = 0;
-  }
-  drawWifiStrength(strength);
-  display.drawLine(0, 20, SCREEN_WIDTH, 20, SH110X_WHITE);
-  display.setTextSize(1);
-  const char* serverStatus;
-  if (authenticationError) {
-    serverStatus = "AUTH FEHLER";
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.clearDisplay();
+    display_ssd1306.setTextColor(getDisplayWhite());
+    display_ssd1306.setTextSize(2);
+    display_ssd1306.setCursor(0,0);
+    display_ssd1306.print(callsign);
+    int rssi = WiFi.RSSI();
+    int strength = 0;
+    if (WiFi.status() == WL_CONNECTED) {
+      if (rssi > -55) strength = 4;
+      else if (rssi > -65) strength = 3;
+      else if (rssi > -75) strength = 2;
+      else if (rssi > -85) strength = 1;
+      else strength = 0;
+    }
+    drawWifiStrength(strength);
+    display_ssd1306.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
+    display_ssd1306.setTextSize(1);
+    const char* serverStatus;
+    if (authenticationError) {
+      serverStatus = "AUTH FEHLER";
+    } else {
+      serverStatus = "Client ONLINE";
+    }
+    int16_t x1, y1;
+    uint16_t w, h;
+    display_ssd1306.getTextBounds(serverStatus, 0, 0, &x1, &y1, &w, &h);
+    display_ssd1306.setCursor((SCREEN_WIDTH - w) / 2, 22);
+    display_ssd1306.print(serverStatus);
+    display_ssd1306.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
+    drawRXTXRects();
+    display_ssd1306.display();
   } else {
-    serverStatus = "Client ONLINE";
+    display_sh1106.clearDisplay();
+    display_sh1106.setTextColor(getDisplayWhite());
+    display_sh1106.setTextSize(2);
+    display_sh1106.setCursor(0,0);
+    display_sh1106.print(callsign);
+    int rssi = WiFi.RSSI();
+    int strength = 0;
+    if (WiFi.status() == WL_CONNECTED) {
+      if (rssi > -55) strength = 4;
+      else if (rssi > -65) strength = 3;
+      else if (rssi > -75) strength = 2;
+      else if (rssi > -85) strength = 1;
+      else strength = 0;
+    }
+    drawWifiStrength(strength);
+    display_sh1106.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
+    display_sh1106.setTextSize(1);
+    const char* serverStatus;
+    if (authenticationError) {
+      serverStatus = "AUTH FEHLER";
+    } else {
+      serverStatus = "Client ONLINE";
+    }
+    int16_t x1, y1;
+    uint16_t w, h;
+    display_sh1106.getTextBounds(serverStatus, 0, 0, &x1, &y1, &w, &h);
+    display_sh1106.setCursor((SCREEN_WIDTH - w) / 2, 22);
+    display_sh1106.print(serverStatus);
+    display_sh1106.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
+    drawRXTXRects();
+    display_sh1106.display();
   }
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(serverStatus, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((SCREEN_WIDTH - w) / 2, 22);
-  display.print(serverStatus);
-  display.drawLine(0, 32, SCREEN_WIDTH, 32, SH110X_WHITE);
-  drawRXTXRects();
-  display.display();
 }
 
 void saveConfig() {
@@ -212,6 +355,7 @@ void saveConfig() {
   EEPROM.write(BAUD_OFFSET+2, (baudrate >> 8) & 0xFF);
   EEPROM.write(BAUD_OFFSET+3, baudrate & 0xFF);
   EEPROM.write(LOGLEVEL_OFFSET, logLevel);
+  EEPROM.write(DISPLAYTYPE_OFFSET, displayType);  // Display-Typ speichern
   EEPROM.commit();
 }
 
@@ -235,6 +379,7 @@ void loadConfig() {
            | ((uint32_t)EEPROM.read(BAUD_OFFSET+2) << 8)
            | ((uint32_t)EEPROM.read(BAUD_OFFSET+3));
   logLevel = EEPROM.read(LOGLEVEL_OFFSET);
+  displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Display-Typ laden
   if(serverPort == 0xFFFF || serverPort == 0x0000) {
     serverPort = 2323;
     appendMonitor("Server Port war ungültig, auf 2323 gesetzt", "WARNING");
@@ -244,6 +389,7 @@ void loadConfig() {
     appendMonitor("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
   }
   if(logLevel > 3) logLevel = 1;
+  if(displayType > 1) displayType = DISPLAY_SSD1306;  // Default zu SSD1306 bei ungültigem Wert
   if(strlen(wifiSsid) == 0) appendMonitor("WLAN SSID ist leer!", "WARNING");
   if(strlen(serverUrl) == 0) appendMonitor("Server URL ist leer!", "WARNING");
   if(strlen(otaRepoUrl) == 0) {
@@ -365,6 +511,19 @@ void handleRoot() {
   html += ">Debug</option>";
   html += "</select>";
   html += "<label for=\"loglevel\">Log Level</label>";
+  html += "</div>";
+  
+  // Display-Typ Auswahl
+  html += "<div class=\"input-field custom-row\">";
+  html += "<select id=\"displaytype\" name=\"displaytype\">";
+  html += "<option value=\"1\"";
+  if(displayType==DISPLAY_SSD1306) html += " selected";
+  html += ">SSD1306 (kleines Display)</option>";
+  html += "<option value=\"0\"";
+  if(displayType==DISPLAY_SH1106G) html += " selected";
+  html += ">SH1106G (großes Display)</option>";
+  html += "</select>";
+  html += "<label for=\"displaytype\">Display-Typ</label>";
   html += "</div>";
   html += R"=====(
         <button class="btn waves-effect waves-light teal" type="submit" id="savebtn">Speichern
@@ -547,6 +706,7 @@ void handleSave() {
   if (server.hasArg("serverport")) serverPort = server.arg("serverport").toInt();
   if (server.hasArg("baudrate")) baudrate = server.arg("baudrate").toInt();
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
+  if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
@@ -771,16 +931,11 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
-  if(!display.begin(0x3C, true)) {
-    Serial.println("SH1106G OLED Fehler!");
-    while (1) { delay(10); }
-  }
-  display.clearDisplay();
-  display.display();
-  bootPrint("Init Display ... OK");
-
   loadConfig();
-  bootPrint("Load Config ... OK");
+  
+  // Initialize display based on configuration
+  initDisplay();
+  bootPrint("Init Display ... OK");
 
   if (baudrate == 0) {
     baudrate = 2400;
