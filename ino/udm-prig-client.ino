@@ -20,7 +20,6 @@
 #define PASS_OFFSET 64
 #define SERVERURL_OFFSET 128
 #define CALLSIGN_OFFSET 160
-#define PORT_OFFSET 192
 #define BAUD_OFFSET 194
 #define LOGLEVEL_OFFSET 198
 #define OTAURL_OFFSET 200
@@ -63,7 +62,6 @@ char wifiPass[64] = "";
 char serverUrl[64] = ""; // z.B. "http://192.168.1.10/udmprig-server"
 char callsign[32] = "";
 char otaRepoUrl[128] = "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota";
-uint16_t serverPort = 80;
 uint32_t baudrate = 2400;
 uint8_t logLevel = 1;
 uint8_t displayType = DISPLAY_SSD1306; // Default: SSD1306 (kleineres Display)
@@ -164,17 +162,14 @@ void configureHTTPClient(HTTPClient &http, String url) {
     if (sslValidation) {
       // Echte SSL-Zertifikatsprüfung (für offizielle Zertifikate)
       client->setCACert(root_ca);
-      appendMonitor("HTTPS: Verschlüsselt mit Zertifikatsprüfung (offizielle Zerts)", "INFO");
     } else {
       // Für Self-Signed Zertifikate: Zertifikatsprüfung deaktivieren
       client->setInsecure(); 
-      appendMonitor("HTTPS: Verschlüsselt ohne Zertifikatsprüfung (Self-Signed)", "INFO");
     }
     
     http.begin(*client, url);
   } else {
     // Standard HTTP
-    appendMonitor("HTTP: Unverschlüsselte Verbindung", "INFO");
     http.begin(url);
   }
   
@@ -430,8 +425,6 @@ void saveConfig() {
   for (int i = 0; i < 32; ++i) EEPROM.write(CALLSIGN_OFFSET+i, callsign[i]);
   for (int i = 0; i < 128; ++i) EEPROM.write(OTAURL_OFFSET+i, otaRepoUrl[i]);
   for (int i = 0; i < 16; ++i) EEPROM.write(VERSION_OFFSET+i, localVersion[i]);
-  EEPROM.write(PORT_OFFSET, (serverPort >> 8) & 0xFF);
-  EEPROM.write(PORT_OFFSET+1, serverPort & 0xFF);
   EEPROM.write(BAUD_OFFSET, (baudrate >> 24) & 0xFF);
   EEPROM.write(BAUD_OFFSET+1, (baudrate >> 16) & 0xFF);
   EEPROM.write(BAUD_OFFSET+2, (baudrate >> 8) & 0xFF);
@@ -456,7 +449,6 @@ void loadConfig() {
   otaRepoUrl[127] = 0;
   for (int i = 0; i < 16; ++i) localVersion[i] = EEPROM.read(VERSION_OFFSET+i);
   localVersion[15] = 0;
-  serverPort = (EEPROM.read(PORT_OFFSET) << 8) | EEPROM.read(PORT_OFFSET+1);
   baudrate = ((uint32_t)EEPROM.read(BAUD_OFFSET) << 24)
            | ((uint32_t)EEPROM.read(BAUD_OFFSET+1) << 16)
            | ((uint32_t)EEPROM.read(BAUD_OFFSET+2) << 8)
@@ -464,10 +456,6 @@ void loadConfig() {
   logLevel = EEPROM.read(LOGLEVEL_OFFSET);
   displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Display-Typ laden
   sslValidation = EEPROM.read(SSL_VALIDATION_OFFSET) == 1;  // SSL-Validierung laden
-  if(serverPort == 0xFFFF || serverPort == 0x0000) {
-    serverPort = 2323;
-    appendMonitor("Server Port war ungültig, auf 2323 gesetzt", "WARNING");
-  }
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
     appendMonitor("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
@@ -493,7 +481,9 @@ void handleRoot() {
 <html>
   <head>
     <meta charset="UTF-8">
-    <title>UDMPRIG-Client</title>
+    <title>UDMPRIG-Client v)=====";
+  html += String(localVersion);
+  html += R"=====(</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
     <style>
@@ -518,7 +508,9 @@ void handleRoot() {
     </style>
   </head>
   <body>
-    <h4><i class="material-icons left">settings_ethernet</i>UDMPRIG-Client</h4>
+    <h4><i class="material-icons left">settings_ethernet</i>UDMPRIG-Client v)=====";
+  html += String(localVersion);
+  html += R"=====(</h4>
     <ul id="tabs-swipe-demo" class="tabs">
       <li class="tab col s3"><a class="active" href="#config">Config</a></li>
       <li class="tab col s3"><a href="#monitor">Monitor</a></li>
@@ -542,12 +534,6 @@ void handleRoot() {
   html += String(serverUrl);
   html += R"=====(">
           <label for="serverurl" class="active">Server URL</label>
-        </div>
-        <div class="input-field custom-row">
-          <input id="serverport" name="serverport" type="number" min="1" max="65535" value=")=====";
-  html += String(serverPort);
-  html += R"=====(">
-          <label for="serverport" class="active">Server Port</label>
         </div>
         <div class="input-field custom-row">
           <input id="callsign" name="callsign" type="text" maxlength="31" value=")=====";
@@ -801,7 +787,6 @@ void handleSave() {
   if (server.hasArg("serverurl")) strncpy(serverUrl, server.arg("serverurl").c_str(), 63);
   if (server.hasArg("callsign")) strncpy(callsign, server.arg("callsign").c_str(), 31);
   if (server.hasArg("otarepourl")) strncpy(otaRepoUrl, server.arg("otarepourl").c_str(), 127);
-  if (server.hasArg("serverport")) serverPort = server.arg("serverport").toInt();
   if (server.hasArg("baudrate")) baudrate = server.arg("baudrate").toInt();
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
