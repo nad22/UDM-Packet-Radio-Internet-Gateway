@@ -10,11 +10,12 @@ require_once __DIR__ . '/broadcast_manager.php';
 
 header('Content-Type: application/json');
 
-// Debug: Log all requests
-error_log("[" . date('Y-m-d H:i:s') . "] Smart-Polling request from: " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . " for callsign: " . ($_GET['callsign'] ?? 'none'));
+// Debug: Log nur bei Fehlern (nicht bei jedem Request)
+// error_log("[" . date('Y-m-d H:i:s') . "] Smart-Polling request from: " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . " for callsign: " . ($_GET['callsign'] ?? 'none'));
 
 $callsign = $_GET['callsign'] ?? '';
 if (empty($callsign)) {
+    error_log("[" . date('Y-m-d H:i:s') . "] ERROR: Smart-Polling missing callsign from: " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown'));
     http_response_code(400);
     echo json_encode(['error' => 'Missing callsign parameter']);
     exit;

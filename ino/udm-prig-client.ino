@@ -12,6 +12,7 @@
 #include <Update.h>
 #include <HTTPUpdate.h>
 #include <esp_task_wdt.h>
+#include <esp_wifi.h>
 
 // Watchdog-Timer Konfiguration
 #define WDT_TIMEOUT 30  // 30 Sekunden Watchdog-Timeout
@@ -1382,9 +1383,13 @@ bool tryConnectWiFi() {
   WiFi.setAutoReconnect(true);
   WiFi.persistent(true);
   
-  // ESP32-spezifische Optimierungen für bessere Stabilität
-  WiFi.setSleep(false); // WiFi-Sleep deaktivieren für Stabilität
-  WiFi.setTxPower(WIFI_POWER_19_5dBm); // Maximale Sendeleistung
+  // **AGGRESSIVE WiFi-Stabilitäts-Optimierungen**
+  WiFi.setSleep(false);                          // Kein WiFi-Sleep
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);          // Maximale Sendeleistung
+  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);  // DHCP zurücksetzen
+  
+  // **WiFi-Protokoll auf 802.11n begrenzen (bessere Kompatibilität)**
+  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
   
   // Verbindung aufbauen
   WiFi.begin(wifiSsid, wifiPass);
@@ -1394,7 +1399,7 @@ bool tryConnectWiFi() {
   while (WiFi.status() != WL_CONNECTED && timeout < 40) {
     delay(500);
     timeout++;
-    esp_task_wdt_reset(); // Watchdog zurücksetzen
+    // Watchdog entfernt
     
     // Status-Updates alle 5 Sekunden
     if (timeout % 10 == 0) {
