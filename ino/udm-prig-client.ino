@@ -8,13 +8,14 @@
 #include <ESPmDNS.h>
 #include <time.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <Update.h>
 #include <HTTPUpdate.h>
 #include <esp_task_wdt.h>
 
 // Watchdog-Timer Konfiguration
 #define WDT_TIMEOUT 30  // 30 Sekunden Watchdog-Timeout
-#define EEPROM_SIZE 346  // Erweitert für Display-Typ
+#define EEPROM_SIZE 347  // Reduziert: Display-Typ + SSL-Validierung (HTTPS auto-detect)
 #define SSID_OFFSET 0
 #define PASS_OFFSET 64
 #define SERVERURL_OFFSET 128
@@ -24,7 +25,8 @@
 #define LOGLEVEL_OFFSET 198
 #define OTAURL_OFFSET 200
 #define VERSION_OFFSET 328
-#define DISPLAYTYPE_OFFSET 345  // Neuer Offset für Display-Typ
+#define DISPLAYTYPE_OFFSET 345  // Offset für Display-Typ
+#define SSL_VALIDATION_OFFSET 346  // Offset für SSL-Zertifikat-Validierung
 
 #define LED_PIN 2
 
@@ -65,8 +67,11 @@ uint16_t serverPort = 80;
 uint32_t baudrate = 2400;
 uint8_t logLevel = 1;
 uint8_t displayType = DISPLAY_SSD1306; // Default: SSD1306 (kleineres Display)
+bool sslValidation = true; // Default: SSL-Validierung aktiviert für sichere Verbindungen
 bool apActive = false;
 bool authenticationError = false;
+bool sslCertificateError = false; // Neuer Flag für SSL-Zertifikatsfehler
+bool connectionError = false; // Flag für allgemeine Verbindungsfehler (Server offline, etc.)
 
 // Smart-Polling-Variablen
 unsigned long smartPollInterval = 2000; // Dynamisches Intervall (Standard: 2s, max: 2s, min: 0.5s)
@@ -97,6 +102,41 @@ String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodie
 void handleOTACheck(); // Forward-Deklaration für OTA
 void handleOTAUpdate(); // Forward-Deklaration für OTA
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
+void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
+
+// Root CA Bundle für SSL-Zertifikatsprüfung (Let's Encrypt, DigiCert, etc.)
+const char* root_ca = \
+"-----BEGIN CERTIFICATE-----\n" \
+"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\n" \
+"-----END CERTIFICATE-----\n";
 
 // Display-Initialisierung basierend auf displayType
 bool initDisplay() {
@@ -116,7 +156,32 @@ bool initDisplay() {
   return true;
 }
 
-// Hilfsfunktion für Display-spezifische Farben
+// HTTPS-HTTPClient-Konfiguration mit automatischer URL-Erkennung
+void configureHTTPClient(HTTPClient &http, String url) {
+  if (url.startsWith("https://")) {
+    WiFiClientSecure *client = new WiFiClientSecure;
+    
+    if (sslValidation) {
+      // Echte SSL-Zertifikatsprüfung (für offizielle Zertifikate)
+      client->setCACert(root_ca);
+      appendMonitor("HTTPS: Verschlüsselt mit Zertifikatsprüfung (offizielle Zerts)", "INFO");
+    } else {
+      // Für Self-Signed Zertifikate: Zertifikatsprüfung deaktivieren
+      client->setInsecure(); 
+      appendMonitor("HTTPS: Verschlüsselt ohne Zertifikatsprüfung (Self-Signed)", "INFO");
+    }
+    
+    http.begin(*client, url);
+  } else {
+    // Standard HTTP
+    appendMonitor("HTTP: Unverschlüsselte Verbindung", "INFO");
+    http.begin(url);
+  }
+  
+  // Standard-Timeouts
+  http.setTimeout(5000);
+  http.setConnectTimeout(3000);
+}
 uint16_t getDisplayWhite() {
   if (displayType == DISPLAY_SSD1306) {
     return SSD1306_WHITE;
@@ -301,8 +366,12 @@ void updateOLED() {
     display_ssd1306.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
     display_ssd1306.setTextSize(1);
     const char* serverStatus;
-    if (authenticationError) {
+    if (sslCertificateError) {
+      serverStatus = "ZERT FEHLER";
+    } else if (authenticationError) {
       serverStatus = "AUTH FEHLER";
+    } else if (connectionError) {
+      serverStatus = "CONN ERROR";
     } else {
       serverStatus = "Client ONLINE";
     }
@@ -333,8 +402,12 @@ void updateOLED() {
     display_sh1106.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
     display_sh1106.setTextSize(1);
     const char* serverStatus;
-    if (authenticationError) {
+    if (sslCertificateError) {
+      serverStatus = "ZERT FEHLER";
+    } else if (authenticationError) {
       serverStatus = "AUTH FEHLER";
+    } else if (connectionError) {
+      serverStatus = "CONN ERROR";
     } else {
       serverStatus = "Client ONLINE";
     }
@@ -365,6 +438,7 @@ void saveConfig() {
   EEPROM.write(BAUD_OFFSET+3, baudrate & 0xFF);
   EEPROM.write(LOGLEVEL_OFFSET, logLevel);
   EEPROM.write(DISPLAYTYPE_OFFSET, displayType);  // Display-Typ speichern
+  EEPROM.write(SSL_VALIDATION_OFFSET, sslValidation ? 1 : 0);  // SSL-Validierung speichern
   EEPROM.commit();
 }
 
@@ -389,6 +463,7 @@ void loadConfig() {
            | ((uint32_t)EEPROM.read(BAUD_OFFSET+3));
   logLevel = EEPROM.read(LOGLEVEL_OFFSET);
   displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Display-Typ laden
+  sslValidation = EEPROM.read(SSL_VALIDATION_OFFSET) == 1;  // SSL-Validierung laden
   if(serverPort == 0xFFFF || serverPort == 0x0000) {
     serverPort = 2323;
     appendMonitor("Server Port war ungültig, auf 2323 gesetzt", "WARNING");
@@ -533,6 +608,20 @@ void handleRoot() {
   html += ">SH1106G (großes Display)</option>";
   html += "</select>";
   html += "<label for=\"displaytype\">Display-Typ</label>";
+  html += "</div>";
+  
+  // SSL-Zertifikat-Validierung (nur relevant für HTTPS-URLs)
+  html += "<div class=\"input-field custom-row\">";
+  html += "<select id=\"sslvalidation\" name=\"sslvalidation\">";
+  html += "<option value=\"0\"";
+  if(!sslValidation) html += " selected";
+  html += ">Deaktiviert (Self-Signed)</option>";
+  html += "<option value=\"1\"";
+  if(sslValidation) html += " selected";
+  html += ">Aktiviert (Offizielle Zerts)</option>";
+  html += "</select>";
+  html += "<label for=\"sslvalidation\">SSL-Zertifikatsprüfung</label>";
+  html += "<span class=\"helper-text\">Automatisch: HTTPS=verschlüsselt, HTTP=unverschlüsselt</span>";
   html += "</div>";
   html += R"=====(
         <button class="btn waves-effect waves-light teal" type="submit" id="savebtn">Speichern
@@ -716,6 +805,7 @@ void handleSave() {
   if (server.hasArg("baudrate")) baudrate = server.arg("baudrate").toInt();
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
+  if (server.hasArg("sslvalidation")) sslValidation = (server.arg("sslvalidation").toInt() == 1);
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
@@ -805,7 +895,7 @@ void checkForUpdates() {
 
   appendMonitor("OTA: Prüfe auf neue Firmware unter " + urlVersion, "INFO");
   HTTPClient http;
-  http.begin(urlVersion);
+  configureHTTPClient(http, urlVersion);
   int httpCode = http.GET();
   if(httpCode == 200) {
     String remoteVersion = http.getString();
@@ -816,7 +906,7 @@ void checkForUpdates() {
       showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
 
       http.end();
-      http.begin(urlFirmware);
+      configureHTTPClient(http, urlFirmware);
       int resp = http.GET();
       if(resp == 200) {
         int contentLength = http.getSize();
@@ -1062,12 +1152,8 @@ void loop() {
     if(sdata.length() > 0 && strlen(serverUrl) > 0) {
       HTTPClient http;
       
-      // **OPTIMIERT: HTTP-Timeouts für Stabilität**
-      http.setTimeout(5000); // 5 Sekunden Timeout
-      http.setConnectTimeout(3000); // 3 Sekunden Connect-Timeout
-      
       String url = String(serverUrl) + "/api/senddata.php";
-      http.begin(url);
+      configureHTTPClient(http, url);
       http.addHeader("Content-Type", "application/x-www-form-urlencoded");
       
       String postData;
@@ -1081,19 +1167,37 @@ void loop() {
         if(response == "DENY") {
           appendMonitor("Server verweigert Verbindung - Callsign nicht autorisiert!", "ERROR");
           authenticationError = true;
+          sslCertificateError = false;
+          connectionError = false;
         } else {
           appendMonitor("Server-Antwort: " + response, "DEBUG");
           authenticationError = false;
+          sslCertificateError = false;
+          connectionError = false;
         }
       } else if(httpCode == 403) {
         appendMonitor("Authentifizierung fehlgeschlagen - Callsign nicht autorisiert!", "ERROR");
         authenticationError = true;
+        sslCertificateError = false;
+        connectionError = false;
       } else if(httpCode < 0) {
-        appendMonitor("HTTP Timeout oder Verbindungsfehler: " + String(httpCode), "ERROR");
-        authenticationError = false;
+        String url = String(serverUrl) + "/api/senddata.php";
+        if(url.startsWith("https://") && sslValidation) {
+          appendMonitor("SSL-Zertifikat Validierungsfehler: " + String(httpCode), "ERROR");
+          sslCertificateError = true;
+          authenticationError = false;
+          connectionError = false;
+        } else {
+          appendMonitor("HTTP Timeout oder Verbindungsfehler: " + String(httpCode), "ERROR");
+          authenticationError = false;
+          sslCertificateError = false;
+          connectionError = true;
+        }
       } else {
         appendMonitor("HTTP POST Fehler: " + String(httpCode), "ERROR");
         authenticationError = false;
+        sslCertificateError = false;
+        connectionError = true;
       }
       
       http.end(); // **WICHTIG: HTTPClient korrekt schließen**
@@ -1109,12 +1213,8 @@ void loop() {
     
     HTTPClient http;
     
-    // **OPTIMIERT: HTTP-Timeouts für Stabilität**
-    http.setTimeout(5000); // 5 Sekunden Timeout
-    http.setConnectTimeout(3000); // 3 Sekunden Connect-Timeout
-    
     String url = String(serverUrl) + "/api/smart_getdata.php?callsign=" + String(callsign);
-    http.begin(url);
+    configureHTTPClient(http, url);
     
     appendMonitor("Smart-Poll: " + url, "DEBUG");
     
@@ -1177,6 +1277,8 @@ void loop() {
         }
         
         authenticationError = false;
+        sslCertificateError = false;
+        connectionError = false;
       } else {
         // Alte Format-Kompatibilität
         if(response.length() > 0 && response != "{\"error\":\"DENY\"}") {
@@ -1190,14 +1292,28 @@ void loop() {
     } else if(httpCode == 403) {
       appendMonitor("Smart-Polling: Authentifizierung fehlgeschlagen!", "ERROR");
       authenticationError = true;
+      sslCertificateError = false; // Reset SSL-Fehler
+      connectionError = false; // Reset Verbindungsfehler
       smartPollInterval = 30000; // Bei Fehlern langsamer prüfen
     } else if(httpCode < 0) {
-      appendMonitor("Smart-Polling Timeout/Verbindungsfehler: " + String(httpCode), "ERROR");
-      authenticationError = false;
+      // Negative HTTP-Codes sind meist SSL/TLS-Fehler
+      if (String(serverUrl).startsWith("https://") && sslValidation) {
+        appendMonitor("Smart-Polling SSL-Zertifikatsfehler: " + String(httpCode), "ERROR");
+        sslCertificateError = true;
+        authenticationError = false;
+        connectionError = false;
+      } else {
+        appendMonitor("Smart-Polling Timeout/Verbindungsfehler: " + String(httpCode), "ERROR");
+        sslCertificateError = false;
+        authenticationError = false;
+        connectionError = true; // Verbindungsfehler setzen
+      }
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
     } else {
       appendMonitor("Smart-Polling Fehler: " + String(httpCode), "ERROR");
       authenticationError = false;
+      sslCertificateError = false;
+      connectionError = true; // Allgemeine HTTP-Fehler als Verbindungsfehler behandeln
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
     }
     
@@ -1325,7 +1441,7 @@ void handleOTACheck() {
   appendMonitor("OTA: Checking for updates...", "INFO");
   
   HTTPClient http;
-  http.begin(String(otaRepoUrl) + "/version.txt");
+  configureHTTPClient(http, String(otaRepoUrl) + "/version.txt");
   
   int httpResponseCode = http.GET();
   
@@ -1356,11 +1472,10 @@ void handleOTAUpdate() {
   // Zuerst prüfen ob Update verfügbar
   HTTPClient http;
   
-  // **OTA UPDATE HTTP TIMEOUTS**
+  configureHTTPClient(http, String(otaRepoUrl) + "/version.txt");
+  // **OTA UPDATE HTTP TIMEOUTS** - überschreibe die Standard-Timeouts
   http.setTimeout(30000); // 30 Sekunden für OTA-Update (länger wegen Download)
   http.setConnectTimeout(5000); // 5 Sekunden Connect-Timeout
-  
-  http.begin(String(otaRepoUrl) + "/version.txt");
   
   int httpResponseCode = http.GET();
   
