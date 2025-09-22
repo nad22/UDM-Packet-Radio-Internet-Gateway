@@ -4,12 +4,11 @@ class BroadcastManager {
     private $mysqli;
     private $broadcastInterval = 300; // 5 Minuten in Sekunden  
     private $lastBroadcast = 0;
-    private $broadcastFile = __DIR__ . '/last_broadcast.txt';
     private $serverCallsign = 'HOSTSTAR';
 
     public function __construct($mysqli) {
         $this->mysqli = $mysqli;
-        $this->loadBroadcastTime();
+        $this->lastBroadcast = time(); // Startet mit aktueller Zeit
         $this->loadServerCallsign();
     }
 
@@ -19,7 +18,6 @@ class BroadcastManager {
         if ($currentTime - $this->lastBroadcast >= $this->broadcastInterval) {
             $this->sendAutoBroadcast();
             $this->lastBroadcast = $currentTime;
-            $this->saveBroadcastTime();
             return true;
         } else {
             return false;
@@ -112,18 +110,6 @@ class BroadcastManager {
         } catch (Exception $e) {
             error_log("[BROADCAST] Fehler beim Queuen für $callsign: " . $e->getMessage());
         }
-    }
-
-    private function loadBroadcastTime() {
-        if (file_exists($this->broadcastFile)) {
-            $this->lastBroadcast = (int)file_get_contents($this->broadcastFile);
-        } else {
-            $this->lastBroadcast = 0;
-        }
-    }
-
-    private function saveBroadcastTime() {
-        file_put_contents($this->broadcastFile, $this->lastBroadcast);
     }
 
     private function loadServerCallsign() {

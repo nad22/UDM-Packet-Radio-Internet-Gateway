@@ -27,6 +27,7 @@
 #define VERSION_OFFSET 328
 #define DISPLAYTYPE_OFFSET 345  // Offset für Display-Typ
 #define SSL_VALIDATION_OFFSET 346  // Offset für SSL-Zertifikat-Validierung
+#define CPU_FREQUENCY_OFFSET 347   // Offset für CPU-Frequenz (1 byte: 0=240MHz, 1=160MHz, 2=80MHz, 3=40MHz, 4=26MHz)
 
 // Crash Log System (EEPROM 400-1023)
 #define CRASH_LOG_START_OFFSET 400
@@ -74,6 +75,7 @@ uint32_t baudrate = 2400;
 uint8_t logLevel = 1;
 uint8_t displayType = DISPLAY_SSD1306; // Default: SSD1306 (kleineres Display)
 bool sslValidation = true; // Default: SSL-Validierung aktiviert für sichere Verbindungen
+uint8_t cpuFrequency = 0; // Default: 240 MHz (0=240MHz, 1=160MHz, 2=80MHz, 3=40MHz, 4=26MHz)
 bool apActive = false;
 bool authenticationError = false;
 bool sslCertificateError = false; // Neuer Flag für SSL-Zertifikatsfehler
@@ -135,6 +137,8 @@ void handleReboot(); // Forward-Deklaration für System Reboot
 void saveCrashLog(const String& message); // Forward-Deklaration für Crash Log
 void loadCrashLogs(); // Forward-Deklaration für Crash Log laden
 void saveCrashLogsToEEPROM(); // Forward-Deklaration für Crash Log speichern
+void clearCrashLogs(); // Forward-Deklaration für Crash Log löschen
+void handleClearCrashLogs(); // Forward-Deklaration für Crash Log löschen Handler
 void checkWiFiConnection(); // Forward-Deklaration für WiFi-Überwachung
 bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
@@ -479,6 +483,7 @@ void saveConfig() {
   EEPROM.write(LOGLEVEL_OFFSET, logLevel);
   EEPROM.write(DISPLAYTYPE_OFFSET, displayType);  // Display-Typ speichern
   EEPROM.write(SSL_VALIDATION_OFFSET, sslValidation ? 1 : 0);  // SSL-Validierung speichern
+  EEPROM.write(CPU_FREQUENCY_OFFSET, cpuFrequency);  // CPU-Frequenz speichern
   EEPROM.commit();
 }
 
@@ -503,6 +508,7 @@ void loadConfig() {
   logLevel = EEPROM.read(LOGLEVEL_OFFSET);
   displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Display-Typ laden
   sslValidation = EEPROM.read(SSL_VALIDATION_OFFSET) == 1;  // SSL-Validierung laden
+  cpuFrequency = EEPROM.read(CPU_FREQUENCY_OFFSET);  // CPU-Frequenz laden
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
     appendMonitor("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
@@ -519,6 +525,33 @@ void loadConfig() {
     strcpy(localVersion, "1.0.1");
     appendMonitor("Version war leer, Standard gesetzt: " + String(localVersion), "WARNING");
     saveConfig(); // Speichere Standard-Version
+  }
+  
+  // Validiere CPU-Frequenz-Wert
+  if(cpuFrequency > 4 || cpuFrequency == 0xFF) {
+    cpuFrequency = 0; // Fallback auf 240 MHz
+    appendMonitor("CPU-Frequenz ungültig, auf 240 MHz zurückgesetzt", "WARNING");
+  }
+}
+
+// CPU-Frequenz setzen basierend auf Konfiguration
+void setCpuFrequency() {
+  uint32_t freqMHz = 240;  // Default
+  switch(cpuFrequency) {
+    case 0: freqMHz = 240; break;  // Standard
+    case 1: freqMHz = 160; break;  // Reduziert
+    case 2: freqMHz = 80; break;   // Energiesparen
+    case 3: freqMHz = 40; break;   // Sehr sparsam
+    case 4: freqMHz = 26; break;   // Backup (26 MHz ist das Minimum für WiFi)
+    default: freqMHz = 240; break;
+  }
+  
+  setCpuFrequencyMhz(freqMHz);
+  
+  if(logLevel >= 1) {
+    Serial.print("CPU-Frequenz gesetzt auf: ");
+    Serial.print(freqMHz);
+    Serial.println(" MHz");
   }
 }
 
@@ -659,6 +692,29 @@ void handleRoot() {
   html += "<label for=\"sslvalidation\">SSL-Zertifikatsprüfung</label>";
   html += "<span class=\"helper-text\">Automatisch: HTTPS=verschlüsselt, HTTP=unverschlüsselt</span>";
   html += "</div>";
+  
+  // CPU-Frequenz Auswahl
+  html += "<div class=\"input-field custom-row\">";
+  html += "<select id=\"cpufreq\" name=\"cpufreq\">";
+  html += "<option value=\"0\"";
+  if(cpuFrequency==0) html += " selected";
+  html += ">240 MHz (Standard)</option>";
+  html += "<option value=\"1\"";
+  if(cpuFrequency==1) html += " selected";
+  html += ">160 MHz (Reduziert)</option>";
+  html += "<option value=\"2\"";
+  if(cpuFrequency==2) html += " selected";
+  html += ">80 MHz (Energiesparen)</option>";
+  html += "<option value=\"3\"";
+  if(cpuFrequency==3) html += " selected";
+  html += ">40 MHz (Sehr sparsam)</option>";
+  html += "<option value=\"4\"";
+  if(cpuFrequency==4) html += " selected";
+  html += ">26 MHz (Backup)</option>";
+  html += "</select>";
+  html += "<label for=\"cpufreq\">CPU-Frequenz</label>";
+  html += "<span class=\"helper-text\">Niedrigere Frequenz = weniger Stromverbrauch</span>";
+  html += "</div>";
   html += R"=====(
         <button class="btn waves-effect waves-light teal" type="submit" id="savebtn">Speichern
           <i class="material-icons right">save</i>
@@ -781,6 +837,11 @@ void handleRoot() {
               <span class="card-title">Crash Logs</span>
               <div id="crashLogsContainer">
                 <p class="grey-text">Lade Crash Logs...</p>
+              </div>
+              <div class="card-action">
+                <button class="btn orange darken-2 waves-effect waves-light" onclick="clearCrashLogs()">
+                  <i class="material-icons left">clear_all</i>Crash Logs löschen
+                </button>
               </div>
             </div>
           </div>
@@ -967,6 +1028,26 @@ void handleRoot() {
           }
         }
         
+        function clearCrashLogs() {
+          if (confirm('Alle Crash Logs wirklich löschen?\\n\\nDiese Aktion kann nicht rückgängig gemacht werden.')) {
+            fetch('/api/clearcrashlogs', { method: 'POST' })
+              .then(response => {
+                if (response.ok) {
+                  M.toast({html: 'Crash Logs erfolgreich gelöscht!', classes: 'green'});
+                  // Crash Logs Container aktualisieren
+                  const crashLogsContainer = document.getElementById('crashLogsContainer');
+                  crashLogsContainer.innerHTML = '<p class="grey-text">Keine Crash Logs vorhanden</p>';
+                } else {
+                  M.toast({html: 'Fehler beim Löschen der Crash Logs', classes: 'red'});
+                }
+              })
+              .catch(err => {
+                console.error('Clear crash logs error:', err);
+                M.toast({html: 'Fehler beim Löschen der Crash Logs', classes: 'red'});
+              });
+          }
+        }
+        
         window.onload = function() {
           updateMonitor();
           updateHardwareInfo();
@@ -1071,6 +1152,7 @@ void handleSave() {
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
   if (server.hasArg("sslvalidation")) sslValidation = (server.arg("sslvalidation").toInt() == 1);
+  if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
@@ -1316,6 +1398,51 @@ void saveCrashLogsToEEPROM() {
   EEPROM.commit(); // Wichtig: Sofort schreiben
 }
 
+// Alle Crash Logs löschen
+void clearCrashLogs() {
+  // Crash Log Array in RAM löschen
+  crashLogCount = 0;
+  for (int i = 0; i < MAX_CRASH_LOGS; i++) {
+    memset(crashLogs[i].timestamp, 0, 21);
+    memset(crashLogs[i].message, 0, 100);
+  }
+  
+  // EEPROM-Bereich löschen
+  // Anzahl auf 0 setzen
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET, 0);
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET+1, 0);
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET+2, 0);
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET+3, 0);
+  
+  // Alle Crash Log Einträge löschen (Bytes auf 0 setzen)
+  for (int i = 0; i < MAX_CRASH_LOGS; i++) {
+    int offset = CRASH_LOG_ENTRIES_OFFSET + (i * CRASH_LOG_ENTRY_SIZE);
+    for (int j = 0; j < CRASH_LOG_ENTRY_SIZE; j++) {
+      EEPROM.write(offset + j, 0);
+    }
+  }
+  
+  EEPROM.commit(); // Sofort in EEPROM schreiben
+  
+  if(logLevel >= 1) {
+    appendMonitor("Alle Crash Logs wurden gelöscht", "INFO");
+  }
+}
+
+// Handler für Crash Logs löschen API
+void handleClearCrashLogs() {
+  // CORS Header für Browser-Kompatibilität
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "POST");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  
+  // Crash Logs löschen
+  clearCrashLogs();
+  
+  // Bestätigung senden
+  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Crash logs cleared successfully\"}");
+}
+
 // WiFi-Verbindungsüberwachung und automatische Wiederherstellung
 void checkWiFiConnection() {
   unsigned long currentTime = millis();
@@ -1440,6 +1567,7 @@ void startWebserver() {
   server.on("/monitor_clear", handleMonitorClear);
   server.on("/api/hardware_info", handleHardwareInfo);
   server.on("/api/reboot", HTTP_POST, handleReboot);
+  server.on("/api/clearcrashlogs", HTTP_POST, handleClearCrashLogs);
   server.on("/ota-check", handleOTACheck);
   server.on("/ota-update", HTTP_POST, handleOTAUpdate);
   server.begin();
@@ -1609,6 +1737,9 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
 
   loadConfig();
+  
+  // CPU-Frequenz basierend auf Konfiguration setzen
+  setCpuFrequency();
   
   // Crash Logs laden
   loadCrashLogs();
