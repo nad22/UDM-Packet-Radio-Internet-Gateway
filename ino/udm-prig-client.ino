@@ -15,7 +15,7 @@
 
 // Watchdog-Timer Konfiguration
 #define WDT_TIMEOUT 30  // 30 Sekunden Watchdog-Timeout
-#define EEPROM_SIZE 347  // Reduziert: Display-Typ + SSL-Validierung (HTTPS auto-detect)
+#define EEPROM_SIZE 1024  // Erweitert für Crash-Logs
 #define SSID_OFFSET 0
 #define PASS_OFFSET 64
 #define SERVERURL_OFFSET 128
@@ -26,6 +26,13 @@
 #define VERSION_OFFSET 328
 #define DISPLAYTYPE_OFFSET 345  // Offset für Display-Typ
 #define SSL_VALIDATION_OFFSET 346  // Offset für SSL-Zertifikat-Validierung
+
+// Crash Log System (EEPROM 400-1023)
+#define CRASH_LOG_START_OFFSET 400
+#define CRASH_LOG_COUNT_OFFSET 400  // 4 bytes für Anzahl der Logs
+#define CRASH_LOG_ENTRIES_OFFSET 404  // Crash Log Einträge (5 x 120 = 600 bytes)
+#define CRASH_LOG_ENTRY_SIZE 120  // Timestamp (20) + Message (100)
+#define MAX_CRASH_LOGS 5
 
 #define LED_PIN 2
 
@@ -71,8 +78,24 @@ bool authenticationError = false;
 bool sslCertificateError = false; // Neuer Flag für SSL-Zertifikatsfehler
 bool connectionError = false; // Flag für allgemeine Verbindungsfehler (Server offline, etc.)
 
+// WiFi-Überwachung und Stabilität
+unsigned long lastWiFiCheck = 0;
+unsigned long wifiReconnectAttempts = 0;
+const unsigned long WIFI_CHECK_INTERVAL = 30000; // WiFi-Status alle 30 Sekunden prüfen
+const unsigned long WIFI_RECONNECT_DELAY = 5000; // 5 Sekunden zwischen Reconnect-Versuchen
+bool forceWiFiReconnect = false;
+
 // Smart-Polling-Variablen
 unsigned long smartPollInterval = 2000; // Dynamisches Intervall (Standard: 2s, max: 2s, min: 0.5s)
+
+// Crash Log System
+struct CrashLogEntry {
+  char timestamp[21];  // YYYY-MM-DD HH:MM:SS + null terminator
+  char message[100];   // Error message
+};
+
+uint32_t crashLogCount = 0;
+CrashLogEntry crashLogs[MAX_CRASH_LOGS];
 
 #define MONITOR_BUF_SIZE 4096
 String monitorBuf = "";
@@ -100,6 +123,12 @@ String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodie
 void handleOTACheck(); // Forward-Deklaration für OTA
 void handleOTAUpdate(); // Forward-Deklaration für OTA
 void handleHardwareInfo(); // Forward-Deklaration für Hardware Info API
+void handleReboot(); // Forward-Deklaration für System Reboot
+void saveCrashLog(const String& message); // Forward-Deklaration für Crash Log
+void loadCrashLogs(); // Forward-Deklaration für Crash Log laden
+void saveCrashLogsToEEPROM(); // Forward-Deklaration für Crash Log speichern
+void checkWiFiConnection(); // Forward-Deklaration für WiFi-Überwachung
+bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
 
@@ -507,6 +536,7 @@ void handleRoot() {
       .container { max-width: 1200px; }
       .wifi-signal-bar { background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden; }
       .wifi-signal-fill { height: 100%; border-radius: 10px; transition: width 0.5s ease; }
+      .badge { background: #f44336; color: white; border-radius: 12px; padding: 2px 8px; font-size: 12px; font-weight: bold; margin-left: 8px; }
       @media (max-width: 768px) { body { padding: 10px; } }
     </style>
   </head>
@@ -727,6 +757,27 @@ void handleRoot() {
               <p><strong>SSL Validation:</strong> <span id="sslValidation">-</span></p>
             </div>
           </div>
+          
+          <!-- Crash Logs Section -->
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">Crash Logs <span class="badge red" id="crashLogBadge">0</span></span>
+              <div id="crashLogsContainer">
+                <p class="grey-text">Lade Crash Logs...</p>
+              </div>
+            </div>
+          </div>
+          
+          <!-- System Control Section -->
+          <div class="card">
+            <div class="card-content">
+              <span class="card-title">System Control</span>
+              <p>ESP32 neustarten für Wartung oder bei Problemen.</p>
+              <button class="btn red waves-effect waves-light" onclick="rebootSystem()">
+                <i class="material-icons left">restart_alt</i>System Neustart
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       
@@ -841,6 +892,31 @@ void handleRoot() {
             document.getElementById('temperature').textContent = data.system.temperature || '-';
             document.getElementById('displayType').textContent = data.system.displayType || '-';
             document.getElementById('sslValidation').textContent = data.system.sslValidation || '-';
+            
+            // Crash Logs anzeigen
+            const crashLogBadge = document.getElementById('crashLogBadge');
+            const crashLogsContainer = document.getElementById('crashLogsContainer');
+            
+            if (data.crashLogs && data.crashLogs.length > 0) {
+              crashLogBadge.textContent = data.crashLogCount || data.crashLogs.length;
+              crashLogBadge.style.display = 'inline';
+              
+              let crashHtml = '<div class="collection">';
+              data.crashLogs.forEach((log, index) => {
+                const timeClass = index === 0 ? 'red-text' : 'grey-text text-darken-2';
+                crashHtml += '<div class="collection-item">';
+                crashHtml += '<span class="' + timeClass + '">' + log.timestamp + '</span><br>';
+                crashHtml += '<span class="black-text">' + log.message + '</span>';
+                crashHtml += '</div>';
+              });
+              crashHtml += '</div>';
+              
+              crashLogsContainer.innerHTML = crashHtml;
+            } else {
+              crashLogBadge.textContent = '0';
+              crashLogBadge.style.display = 'none';
+              crashLogsContainer.innerHTML = '<p class="green-text">Keine Crash Logs gefunden - System läuft stabil!</p>';
+            }
           }).catch(err => {
             console.error('Error fetching hardware info:', err);
           });
@@ -853,6 +929,31 @@ void handleRoot() {
             updateHardwareInfo();
           }
         }, 5000);
+        
+        // System Reboot Funktion
+        function rebootSystem() {
+          if (confirm('ESP32 wirklich neustarten?\\n\\nDas System wird für ca. 10 Sekunden nicht erreichbar sein.')) {
+            fetch('/api/reboot', { method: 'POST' })
+              .then(response => {
+                if (response.ok) {
+                  alert('Neustart eingeleitet. Das System startet neu...');
+                  // Nach 2 Sekunden die Seite neu laden versuchen
+                  setTimeout(() => {
+                    window.location.reload();
+                  }, 12000); // 12 Sekunden warten
+                } else {
+                  alert('Fehler beim Neustart-Befehl');
+                }
+              })
+              .catch(err => {
+                console.error('Reboot error:', err);
+                alert('Neustart eingeleitet (Verbindung verloren - normal)');
+                setTimeout(() => {
+                  window.location.reload();
+                }, 12000);
+              });
+          }
+        }
         
         window.onload = function() {
           updateMonitor();
@@ -1072,11 +1173,242 @@ void handleHardwareInfo() {
   
   // SSL Validation
   json += "\"sslValidation\":\"" + String(sslValidation ? "Enabled" : "Disabled") + "\"";
-  json += "}";
+  json += "},";
+  
+  // Crash Logs
+  json += "\"crashLogs\":[";
+  
+  // Zeige die letzten 5 Crash Logs (zirkulärer Puffer)
+  uint32_t totalLogs = min(crashLogCount, (uint32_t)MAX_CRASH_LOGS);
+  for (int i = 0; i < totalLogs; i++) {
+    if (i > 0) json += ",";
+    
+    // Berechne Index für zirkulären Puffer
+    uint32_t logIndex = (crashLogCount >= MAX_CRASH_LOGS) ? 
+                        ((crashLogCount - totalLogs + i) % MAX_CRASH_LOGS) : i;
+    
+    json += "{";
+    json += "\"timestamp\":\"" + String(crashLogs[logIndex].timestamp) + "\",";
+    json += "\"message\":\"" + String(crashLogs[logIndex].message) + "\"";
+    json += "}";
+  }
+  
+  json += "],";
+  json += "\"crashLogCount\":" + String(crashLogCount);
   
   json += "}";
   
   server.send(200, "application/json", json);
+}
+
+void handleReboot() {
+  // CORS Header für Browser-Kompatibilität
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "POST");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  
+  // Bestätigung senden
+  server.send(200, "application/json", "{\"status\":\"rebooting\",\"message\":\"System reboot initiated\"}");
+  
+  // Monitor-Eintrag und Crash Log für geplanten Neustart
+  appendMonitor("System Neustart durch Benutzer eingeleitet", "INFO");
+  saveCrashLog("Manual system reboot requested by user");
+  
+  // Kurz warten damit die HTTP-Antwort gesendet wird
+  delay(1000);
+  
+  // ESP32 neustarten
+  ESP.restart();
+}
+
+// Crash Log System - Fehler vor Watchdog-Reset speichern
+void saveCrashLog(const String& message) {
+  // Aktuellen Timestamp generieren
+  String timestamp = getTimestamp();
+  
+  // Neue Position berechnen (zirkulärer Puffer)
+  uint32_t index = crashLogCount % MAX_CRASH_LOGS;
+  
+  // Crash Log Eintrag erstellen
+  strncpy(crashLogs[index].timestamp, timestamp.c_str(), 20);
+  crashLogs[index].timestamp[20] = '\0';
+  strncpy(crashLogs[index].message, message.c_str(), 99);
+  crashLogs[index].message[99] = '\0';
+  
+  // Zähler erhöhen
+  crashLogCount++;
+  
+  // Sofort in EEPROM speichern (wichtig vor Watchdog-Reset)
+  saveCrashLogsToEEPROM();
+  
+  // Auch in Monitor ausgeben
+  appendMonitor("CRASH LOG: " + message, "ERROR");
+}
+
+void loadCrashLogs() {
+  // Anzahl der Crash Logs laden
+  crashLogCount = ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET) << 24)
+                | ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET+1) << 16)
+                | ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET+2) << 8)
+                | ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET+3));
+  
+  // Plausibilitätsprüfung
+  if (crashLogCount > 10000) { // Mehr als 10000 ist unrealistisch
+    crashLogCount = 0;
+    appendMonitor("Crash Log Count korrigiert (war ungültig)", "WARNING");
+  }
+  
+  // Crash Log Einträge laden
+  for (int i = 0; i < MAX_CRASH_LOGS; i++) {
+    int offset = CRASH_LOG_ENTRIES_OFFSET + (i * CRASH_LOG_ENTRY_SIZE);
+    
+    // Timestamp laden
+    for (int j = 0; j < 21; j++) {
+      crashLogs[i].timestamp[j] = EEPROM.read(offset + j);
+    }
+    
+    // Message laden
+    for (int j = 0; j < 100; j++) {
+      crashLogs[i].message[j] = EEPROM.read(offset + 21 + j);
+    }
+  }
+  
+  appendMonitor("Crash Logs geladen. Anzahl: " + String(crashLogCount), "INFO");
+}
+
+void saveCrashLogsToEEPROM() {
+  // Anzahl der Crash Logs speichern
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET, (crashLogCount >> 24) & 0xFF);
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET+1, (crashLogCount >> 16) & 0xFF);
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET+2, (crashLogCount >> 8) & 0xFF);
+  EEPROM.write(CRASH_LOG_COUNT_OFFSET+3, crashLogCount & 0xFF);
+  
+  // Crash Log Einträge speichern
+  for (int i = 0; i < MAX_CRASH_LOGS; i++) {
+    int offset = CRASH_LOG_ENTRIES_OFFSET + (i * CRASH_LOG_ENTRY_SIZE);
+    
+    // Timestamp speichern
+    for (int j = 0; j < 21; j++) {
+      EEPROM.write(offset + j, crashLogs[i].timestamp[j]);
+    }
+    
+    // Message speichern
+    for (int j = 0; j < 100; j++) {
+      EEPROM.write(offset + 21 + j, crashLogs[i].message[j]);
+    }
+  }
+  
+  EEPROM.commit(); // Wichtig: Sofort schreiben
+}
+
+// WiFi-Verbindungsüberwachung und automatische Wiederherstellung
+void checkWiFiConnection() {
+  unsigned long currentTime = millis();
+  
+  // Prüfe WiFi-Status nur alle WIFI_CHECK_INTERVAL Millisekunden
+  if (currentTime - lastWiFiCheck < WIFI_CHECK_INTERVAL && !forceWiFiReconnect) {
+    return;
+  }
+  
+  lastWiFiCheck = currentTime;
+  
+  // Prüfe WiFi-Status
+  if (WiFi.status() != WL_CONNECTED || forceWiFiReconnect) {
+    appendMonitor("WiFi-Verbindung verloren (Status: " + String(WiFi.status()) + "). Versuche Wiederverbindung...", "WARNING");
+    
+    wifiReconnectAttempts++;
+    
+    // WiFi komplett neustarten bei häufigen Problemen
+    if (wifiReconnectAttempts > 3) {
+      appendMonitor("Mehrere WiFi-Fehler. Führe kompletten WiFi-Reset durch...", "WARNING");
+      WiFi.disconnect(true);
+      delay(1000);
+      WiFi.mode(WIFI_OFF);
+      delay(1000);
+      WiFi.mode(WIFI_STA);
+      delay(1000);
+      wifiReconnectAttempts = 0;
+    }
+    
+    // WiFi-Verbindung wiederherstellen
+    WiFi.begin(wifiSsid, wifiPass);
+    
+    // Warte auf Verbindung (max 10 Sekunden)
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500);
+      attempts++;
+      esp_task_wdt_reset(); // Watchdog zurücksetzen
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      appendMonitor("WiFi erfolgreich wiederverbunden. IP: " + WiFi.localIP().toString() + ", RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
+      connectionError = false;
+      forceWiFiReconnect = false;
+      wifiReconnectAttempts = 0;
+    } else {
+      appendMonitor("WiFi-Wiederverbindung fehlgeschlagen. Versuche später erneut.", "ERROR");
+      saveCrashLog("WiFi reconnect failed (Status: " + String(WiFi.status()) + ")");
+      connectionError = true;
+    }
+  } else {
+    // WiFi ist verbunden - prüfe Signalqualität
+    int rssi = WiFi.RSSI();
+    if (rssi < -85) {
+      appendMonitor("Schwaches WiFi-Signal (" + String(rssi) + " dBm). Überwache Verbindung...", "WARNING");
+    }
+    
+    // Reset Reconnect-Zähler bei stabiler Verbindung
+    if (wifiReconnectAttempts > 0) {
+      wifiReconnectAttempts = 0;
+    }
+  }
+}
+
+// Verbesserte WiFi-Verbindungsfunktion mit Stabilität
+bool tryConnectWiFi() {
+  appendMonitor("WLAN Verbindung wird aufgebaut...", "INFO");
+  
+  // WiFi-Modus konfigurieren
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
+  
+  // ESP32-spezifische Optimierungen für bessere Stabilität
+  WiFi.setSleep(false); // WiFi-Sleep deaktivieren für Stabilität
+  WiFi.setTxPower(WIFI_POWER_19_5dBm); // Maximale Sendeleistung
+  
+  // Verbindung aufbauen
+  WiFi.begin(wifiSsid, wifiPass);
+  
+  // Warte auf Verbindung (max 20 Sekunden)
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout < 40) {
+    delay(500);
+    timeout++;
+    esp_task_wdt_reset(); // Watchdog zurücksetzen
+    
+    // Status-Updates alle 5 Sekunden
+    if (timeout % 10 == 0) {
+      appendMonitor("WiFi-Verbindung... Versuch " + String(timeout/2) + "/20", "INFO");
+    }
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    appendMonitor("WLAN erfolgreich verbunden mit " + String(wifiSsid), "INFO");
+    appendMonitor("IP-Adresse: " + WiFi.localIP().toString(), "INFO");
+    appendMonitor("RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
+    
+    // Reset-Zähler zurücksetzen
+    wifiReconnectAttempts = 0;
+    connectionError = false;
+    
+    return true;
+  } else {
+    appendMonitor("WLAN-Verbindung fehlgeschlagen nach 20 Sekunden (Status: " + String(WiFi.status()) + ")", "ERROR");
+    saveCrashLog("WiFi connect timeout (Status: " + String(WiFi.status()) + ")");
+    return false;
+  }
 }
 
 void startWebserver() {
@@ -1085,6 +1417,7 @@ void startWebserver() {
   server.on("/monitor", handleMonitor);
   server.on("/monitor_clear", handleMonitorClear);
   server.on("/api/hardware_info", handleHardwareInfo);
+  server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/ota-check", handleOTACheck);
   server.on("/ota-update", HTTP_POST, handleOTAUpdate);
   server.begin();
@@ -1105,22 +1438,6 @@ void startConfigPortal() {
   WiFi.softAPdisconnect(true);
   appendMonitor("Konfigurationsmodus verlassen, Hotspot deaktiviert", "INFO");
   apActive = false;
-}
-
-bool tryConnectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid, wifiPass);
-  appendMonitor("WLAN Verbindung wird aufgebaut...", "INFO");
-  for (int i = 0; i < 40; ++i) {
-    if (WiFi.status() == WL_CONNECTED) {
-      appendMonitor("WLAN verbunden: " + WiFi.localIP().toString(), "INFO");
-      return true;
-    }
-    blinkLED();
-    delay(250);
-  }
-  appendMonitor("WLAN Verbindung fehlgeschlagen!", "ERROR");
-  return false;
 }
 
 void checkForUpdates() {
@@ -1271,6 +1588,20 @@ void setup() {
 
   loadConfig();
   
+  // Crash Logs laden
+  loadCrashLogs();
+  
+  // Bei Watchdog-Reset einen Crash Log Eintrag erstellen
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  if (resetReason == ESP_RST_TASK_WDT || resetReason == ESP_RST_INT_WDT || resetReason == ESP_RST_WDT) {
+    String reasonStr = "Unknown WDT";
+    if (resetReason == ESP_RST_TASK_WDT) reasonStr = "Task Watchdog";
+    else if (resetReason == ESP_RST_INT_WDT) reasonStr = "Interrupt Watchdog";
+    else if (resetReason == ESP_RST_WDT) reasonStr = "Other Watchdog";
+    
+    saveCrashLog("System rebooted by " + reasonStr + " - Previous session ended unexpectedly");
+  }
+  
   // Initialize display based on configuration
   initDisplay();
   bootPrint("Init Display ... OK");
@@ -1335,9 +1666,11 @@ void setup() {
       lastWatchdogReset = millis();
     } else {
       appendMonitor("Watchdog Task-Add fehlgeschlagen, Code: " + String(result), "WARNING");
+      saveCrashLog("Watchdog task add failed: " + String(result));
     }
   } else {
     appendMonitor("Watchdog Init fehlgeschlagen, Code: " + String(result) + " - System läuft ohne Watchdog", "WARNING");
+    saveCrashLog("Watchdog init failed: " + String(result));
   }
   
   delay(1000); // Kurz warten nach Watchdog-Aktivierung
@@ -1351,6 +1684,9 @@ void loop() {
     esp_task_wdt_reset(); // Nur wenn Watchdog aktiv ist
     lastWatchdogReset = now;
   }
+  
+  // **WiFi-Verbindungsüberwachung**
+  checkWiFiConnection();
   
   // **OPTIMIERT: Memory-Überwachung (weniger häufig)**
   if (now - lastMemoryCheck > MEMORY_CHECK_INTERVAL) {
@@ -1423,20 +1759,27 @@ void loop() {
         String url = String(serverUrl) + "/api/senddata.php";
         if(url.startsWith("https://") && sslValidation) {
           appendMonitor("SSL-Zertifikat Validierungsfehler: " + String(httpCode), "ERROR");
+          saveCrashLog("SSL cert validation error: " + String(httpCode));
           sslCertificateError = true;
           authenticationError = false;
           connectionError = false;
         } else {
           appendMonitor("HTTP Timeout oder Verbindungsfehler: " + String(httpCode), "ERROR");
+          saveCrashLog("HTTP connection error: " + String(httpCode));
           authenticationError = false;
           sslCertificateError = false;
           connectionError = true;
+          // Bei HTTP-Fehlern WiFi-Überprüfung erzwingen
+          forceWiFiReconnect = true;
         }
       } else {
         appendMonitor("HTTP POST Fehler: " + String(httpCode), "ERROR");
+        saveCrashLog("HTTP POST error: " + String(httpCode));
         authenticationError = false;
         sslCertificateError = false;
         connectionError = true;
+        // Bei HTTP-Fehlern WiFi-Überprüfung erzwingen
+        forceWiFiReconnect = true;
       }
       
       http.end(); // **WICHTIG: HTTPClient korrekt schließen**
@@ -1538,14 +1881,18 @@ void loop() {
       // Negative HTTP-Codes sind meist SSL/TLS-Fehler
       if (String(serverUrl).startsWith("https://") && sslValidation) {
         appendMonitor("Smart-Polling SSL-Zertifikatsfehler: " + String(httpCode), "ERROR");
+        saveCrashLog("Smart-Polling SSL error: " + String(httpCode));
         sslCertificateError = true;
         authenticationError = false;
         connectionError = false;
       } else {
         appendMonitor("Smart-Polling Timeout/Verbindungsfehler: " + String(httpCode), "ERROR");
+        saveCrashLog("Smart-Polling connection error: " + String(httpCode));
         sslCertificateError = false;
         authenticationError = false;
         connectionError = true; // Verbindungsfehler setzen
+        // Bei Smart-Polling-Fehlern WiFi-Überprüfung erzwingen
+        forceWiFiReconnect = true;
       }
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
     } else {
@@ -1554,6 +1901,8 @@ void loop() {
       sslCertificateError = false;
       connectionError = true; // Allgemeine HTTP-Fehler als Verbindungsfehler behandeln
       smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
+      // Bei Smart-Polling-Fehlern WiFi-Überprüfung erzwingen
+      forceWiFiReconnect = true;
     }
     
     http.end(); // **WICHTIG: HTTPClient korrekt schließen**
