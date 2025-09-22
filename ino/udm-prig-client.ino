@@ -200,21 +200,30 @@ void drawWifiStrength(int strength) {
   int x = SCREEN_WIDTH - 22;
   int y = 0;
   
+  uint16_t white = getDisplayWhite();
+  uint16_t black = (displayType == DISPLAY_SSD1306) ? SSD1306_BLACK : SH110X_BLACK;
+  
   if (displayType == DISPLAY_SSD1306) {
-    display_ssd1306.drawRect(x, y+4, 2, 8, getDisplayWhite());
+    // 4 Signal-Balken (ohne Antennensymbol)
     for(int i=0;i<4;i++) {
-      if(strength>i)
-        display_ssd1306.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
-      else
-        display_ssd1306.drawRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
+      if(strength > i) {
+        // Starkes Signal: Balken gefüllt zeichnen
+        display_ssd1306.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, white);
+      } else {
+        // Schwaches Signal: Balken explizit schwarz überschreiben (ausblenden)
+        display_ssd1306.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, black);
+      }
     }
   } else {
-    display_sh1106.drawRect(x, y+4, 2, 8, getDisplayWhite());
+    // 4 Signal-Balken (ohne Antennensymbol)
     for(int i=0;i<4;i++) {
-      if(strength>i)
-        display_sh1106.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
-      else
-        display_sh1106.drawRect(x+4+i*3, y+12-2*i, 2, 2+2*i, getDisplayWhite());
+      if(strength > i) {
+        // Starkes Signal: Balken gefüllt zeichnen
+        display_sh1106.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, white);
+      } else {
+        // Schwaches Signal: Balken explizit schwarz überschreiben (ausblenden)
+        display_sh1106.fillRect(x+4+i*3, y+12-2*i, 2, 2+2*i, black);
+      }
     }
   }
 }
@@ -277,7 +286,7 @@ void updateOLED() {
     display_ssd1306.clearDisplay();
     display_ssd1306.setTextColor(getDisplayWhite());
     display_ssd1306.setTextSize(2);
-    display_ssd1306.setCursor(0,0);
+    display_ssd1306.setCursor(0,1);
     display_ssd1306.print(callsign);
     int rssi = WiFi.RSSI();
     int strength = 0;
@@ -309,7 +318,7 @@ void updateOLED() {
     display_sh1106.clearDisplay();
     display_sh1106.setTextColor(getDisplayWhite());
     display_sh1106.setTextSize(2);
-    display_sh1106.setCursor(0,0);
+    display_sh1106.setCursor(0,1);
     display_sh1106.print(callsign);
     int rssi = WiFi.RSSI();
     int strength = 0;
