@@ -7,12 +7,19 @@
 #include <EEPROM.h>
 #include <ESPmDNS.h>
 #include <time.h>
-#include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <HTTPUpdate.h>
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
+
+// MQTT Buffer-Größe drastisch erhöhen
+#define MQTT_MAX_PACKET_SIZE 1024
+#define MQTT_KEEPALIVE 300
+
+// **MQTT Standard-Konfiguration**
+#include <WiFiClientSecure.h>
+#include <ArduinoMqttClient.h>
 
 // Watchdog-Timer Konfiguration
 #define WDT_TIMEOUT 30  // 30 Sekunden Watchdog-Timeout
@@ -31,15 +38,15 @@
 
 // MQTT Configuration (EEPROM 348-399)
 #define MQTT_ENABLED_OFFSET 348        // 1 byte: 0=HTTP, 1=MQTT
-#define MQTT_BROKER_OFFSET 349         // 32 bytes für Broker URL
-#define MQTT_PORT_OFFSET 381           // 2 bytes für Port (8883)
-#define MQTT_USERNAME_OFFSET 383       // 8 bytes für Username
-#define MQTT_PASSWORD_OFFSET 391       // 8 bytes für Password
+#define MQTT_BROKER_OFFSET 349         // 64 bytes für Broker URL (erweitert für HiveMQ Cloud)
+#define MQTT_PORT_OFFSET 413           // 2 bytes für Port (8883)
+#define MQTT_USERNAME_OFFSET 415       // 16 bytes für Username (erweitert)
+#define MQTT_PASSWORD_OFFSET 431       // 32 bytes für Password (erweitert auf 30 Zeichen)
 
-// Crash Log System (EEPROM 400-1023)
-#define CRASH_LOG_START_OFFSET 400
-#define CRASH_LOG_COUNT_OFFSET 400  // 4 bytes für Anzahl der Logs
-#define CRASH_LOG_ENTRIES_OFFSET 404  // Crash Log Einträge (5 x 120 = 600 bytes)
+// Crash Log System (EEPROM 465-1023)
+#define CRASH_LOG_START_OFFSET 465
+#define CRASH_LOG_COUNT_OFFSET 465  // 4 bytes für Anzahl der Logs
+#define CRASH_LOG_ENTRIES_OFFSET 469  // Crash Log Einträge (5 x 120 = 600 bytes)
 #define CRASH_LOG_ENTRY_SIZE 120  // Timestamp (20) + Message (100)
 #define MAX_CRASH_LOGS 5
 
@@ -85,15 +92,33 @@ bool sslValidation = true; // Default: SSL-Validierung aktiviert für sichere Ve
 uint8_t cpuFrequency = 0; // Default: 240 MHz (0=240MHz, 1=160MHz, 2=80MHz, 3=40MHz, 4=26MHz)
 
 // MQTT Configuration
-bool mqttEnabled = false; // Default: HTTP mode, MQTT optional
-char mqttBroker[32] = ""; // HiveMQ Cloud Broker URL
+bool mqttEnabled = true; // Default: MQTT mode (reine MQTT-Implementierung)
+char mqttBroker[64] = ""; // HiveMQ Cloud Broker URL (erweitert für längere URLs)
 uint16_t mqttPort = 8883; // Default: SSL Port
-char mqttUsername[8] = ""; // MQTT Username (kurz für EEPROM)
-char mqttPassword[8] = ""; // MQTT Password (kurz für EEPROM)
+char mqttUsername[16] = ""; // MQTT Username (erweitert)
+char mqttPassword[32] = ""; // MQTT Password (erweitert auf 30+1 Zeichen)
+
+// MQTT Client Objects
+WiFiClientSecure mqttWifiClient;
+MqttClient mqttClient(mqttWifiClient);
+unsigned long lastMqttReconnect = 0;
+bool mqttConnected = false;
+
+// Einfaches Broadcast-System (Funk-Simulation)
+// WICHTIG: HiveMQ Cloud muss konfiguriert werden für:
+// - Message Expiry: 0 (keine Speicherung alter Nachrichten)  
+// - Retain: disabled (keine persistenten Nachrichten)
+// - QoS: 0 (Fire-and-Forget wie echter Funk)
+String mqttBroadcastTopic = "udmprig/rf/all";  // Ein globaler "Funk-Kanal"
+
+// KISS Protocol Buffer für saubere Nachrichtentrennung
+static String kissBuffer = "";
+static bool inKissFrame = false;
+static int expectedKissLength = 0;
+static int currentKissLength = 0;
+
 bool apActive = false;
-bool authenticationError = false;
-bool sslCertificateError = false; // Neuer Flag für SSL-Zertifikatsfehler
-bool connectionError = false; // Flag für allgemeine Verbindungsfehler (Server offline, etc.)
+bool connectionError = false; // WiFi-Verbindungsfehler Flag
 
 // WiFi-Überwachung und Stabilität
 unsigned long lastWiFiCheck = 0;
@@ -101,9 +126,6 @@ unsigned long wifiReconnectAttempts = 0;
 const unsigned long WIFI_CHECK_INTERVAL = 30000; // WiFi-Status alle 30 Sekunden prüfen
 const unsigned long WIFI_RECONNECT_DELAY = 5000; // 5 Sekunden zwischen Reconnect-Versuchen
 bool forceWiFiReconnect = false;
-
-// Smart-Polling-Variablen
-unsigned long smartPollInterval = 5000; // Dynamisches Intervall (Standard: 5s für weniger CPU-Last)
 
 // Crash Log System
 struct CrashLogEntry {
@@ -142,7 +164,6 @@ const unsigned long CPU_MEASUREMENT_INTERVAL = 10000; // CPU-Last alle 10 Sekund
 void appendMonitor(const String& msg, const char* level = "INFO");
 String getTimestamp();
 void blinkLED();
-String decodeBase64Simple(String input); // Forward-Deklaration für Smart-Polling
 String decodeKissFrame(String rawData); // Forward-Deklaration für KISS-Dekodierung
 void handleOTACheck(); // Forward-Deklaration für OTA
 void handleOTAUpdate(); // Forward-Deklaration für OTA
@@ -151,18 +172,28 @@ void handleReboot(); // Forward-Deklaration für System Reboot
 void saveCrashLog(const String& message); // Forward-Deklaration für Crash Log
 void loadCrashLogs(); // Forward-Deklaration für Crash Log laden
 void saveCrashLogsToEEPROM(); // Forward-Deklaration für Crash Log speichern
+
+// MQTT Forward-Deklarationen
+void onMqttMessage(int messageSize);
+bool connectMQTT();
+void setupMqttTopics();
+bool publishMqttMessage(const String& topic, const String& message);
+void handleMqttLoop();
+bool isMqttConnected();
+void processMqttMessage(const String& message); // Forward-Deklaration für MQTT-Message Processing
+String hexToBytes(const String& hexString); // Forward-Deklaration für Hex-Dekodierung
 void clearCrashLogs(); // Forward-Deklaration für Crash Log löschen
 void handleClearCrashLogs(); // Forward-Deklaration für Crash Log löschen Handler
 void checkWiFiConnection(); // Forward-Deklaration für WiFi-Überwachung
 String getWiFiStatusText(wl_status_t status); // Forward-Deklaration für WiFi-Status-Text
-String getHTTPErrorText(int httpCode); // Forward-Deklaration für HTTP-Fehlercode-Text
 String getFormattedUptime(); // Forward-Deklaration für formatierte Uptime
 void logWiFiDiagnostics(); // Forward-Deklaration für erweiterte WiFi-Diagnose
 bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
-void configureHTTPClient(HTTPClient &http, String url); // Forward-Deklaration für HTTPS-Konfiguration
 bool isGatewayReachable(); // Forward-Deklaration für Gateway-Ping
-bool connectToStrongestAP(); // Forward-Deklaration für stärksten AP finden
+
+
+void processCompleteKissMessage(const String& kissData);
 
 // Root CA Bundle für SSL-Zertifikatsprüfung (Let's Encrypt, DigiCert, etc.)
 const char* root_ca = \
@@ -440,21 +471,21 @@ void updateOLED() {
     drawWifiStrength(cachedStrength);
     display_ssd1306.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
     display_ssd1306.setTextSize(1);
-    const char* serverStatus;
-    if (sslCertificateError) {
-      serverStatus = "ZERT FEHLER";
-    } else if (authenticationError) {
-      serverStatus = "AUTH FEHLER";
-    } else if (connectionError) {
-      serverStatus = "CONN ERROR";
+    const char* mqttStatus;
+    if (mqttEnabled) {
+      if (isMqttConnected()) {
+        mqttStatus = "MQTT ONLINE";
+      } else {
+        mqttStatus = "MQTT OFFLINE";
+      }
     } else {
-      serverStatus = "Client ONLINE";
+      mqttStatus = "MQTT DISABLED";
     }
     int16_t x1, y1;
     uint16_t w, h;
-    display_ssd1306.getTextBounds(serverStatus, 0, 0, &x1, &y1, &w, &h);
+    display_ssd1306.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
     display_ssd1306.setCursor((SCREEN_WIDTH - w) / 2, 22);
-    display_ssd1306.print(serverStatus);
+    display_ssd1306.print(mqttStatus);
     display_ssd1306.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
     drawRXTXRects();
     display_ssd1306.display();
@@ -468,21 +499,21 @@ void updateOLED() {
     drawWifiStrength(cachedStrength);
     display_sh1106.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
     display_sh1106.setTextSize(1);
-    const char* serverStatus;
-    if (sslCertificateError) {
-      serverStatus = "ZERT FEHLER";
-    } else if (authenticationError) {
-      serverStatus = "AUTH FEHLER";
-    } else if (connectionError) {
-      serverStatus = "CONN ERROR";
+    const char* mqttStatus;
+    if (mqttEnabled) {
+      if (isMqttConnected()) {
+        mqttStatus = "MQTT ONLINE";
+      } else {
+        mqttStatus = "MQTT OFFLINE";
+      }
     } else {
-      serverStatus = "Client ONLINE";
+      mqttStatus = "MQTT DISABLED";
     }
     int16_t x1, y1;
     uint16_t w, h;
-    display_sh1106.getTextBounds(serverStatus, 0, 0, &x1, &y1, &w, &h);
+    display_sh1106.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
     display_sh1106.setCursor((SCREEN_WIDTH - w) / 2, 22);
-    display_sh1106.print(serverStatus);
+    display_sh1106.print(mqttStatus);
     display_sh1106.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
     drawRXTXRects();
     display_sh1106.display();
@@ -508,11 +539,11 @@ void saveConfig() {
   
   // MQTT Configuration speichern
   EEPROM.write(MQTT_ENABLED_OFFSET, mqttEnabled ? 1 : 0);
-  for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_BROKER_OFFSET+i, mqttBroker[i]);
+  for (int i = 0; i < 64; ++i) EEPROM.write(MQTT_BROKER_OFFSET+i, mqttBroker[i]);
   EEPROM.write(MQTT_PORT_OFFSET, (mqttPort >> 8) & 0xFF);
   EEPROM.write(MQTT_PORT_OFFSET+1, mqttPort & 0xFF);
-  for (int i = 0; i < 8; ++i) EEPROM.write(MQTT_USERNAME_OFFSET+i, mqttUsername[i]);
-  for (int i = 0; i < 8; ++i) EEPROM.write(MQTT_PASSWORD_OFFSET+i, mqttPassword[i]);
+  for (int i = 0; i < 16; ++i) EEPROM.write(MQTT_USERNAME_OFFSET+i, mqttUsername[i]);
+  for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_PASSWORD_OFFSET+i, mqttPassword[i]);
   
   EEPROM.commit();
 }
@@ -542,13 +573,13 @@ void loadConfig() {
   
   // MQTT Configuration laden
   mqttEnabled = EEPROM.read(MQTT_ENABLED_OFFSET) == 1;
-  for (int i = 0; i < 32; ++i) mqttBroker[i] = EEPROM.read(MQTT_BROKER_OFFSET+i);
-  mqttBroker[31] = 0;
+  for (int i = 0; i < 64; ++i) mqttBroker[i] = EEPROM.read(MQTT_BROKER_OFFSET+i);
+  mqttBroker[63] = 0;
   mqttPort = ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET) << 8) | ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET+1));
-  for (int i = 0; i < 8; ++i) mqttUsername[i] = EEPROM.read(MQTT_USERNAME_OFFSET+i);
-  mqttUsername[7] = 0;
-  for (int i = 0; i < 8; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
-  mqttPassword[7] = 0;
+  for (int i = 0; i < 16; ++i) mqttUsername[i] = EEPROM.read(MQTT_USERNAME_OFFSET+i);
+  mqttUsername[15] = 0;
+  for (int i = 0; i < 32; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
+  mqttPassword[31] = 0;
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
@@ -591,6 +622,136 @@ void loadConfig() {
     }
   }
 }
+
+// ========================================
+// MQTT FUNKTIONEN
+// ========================================
+
+// MQTT Topics basierend auf Callsign konfigurieren (Broadcast-Modus)
+void setupMqttTopics() {
+  if(strlen(callsign) > 0) {
+    appendMonitor("MQTT Broadcast-Modus konfiguriert für " + String(callsign), "INFO");
+    appendMonitor("Funk-Simulation: Alle hören auf " + mqttBroadcastTopic, "INFO");
+  }
+}
+
+// MQTT Message Callback (Broadcast-Modus)
+void onMqttMessage(int messageSize) {
+  String topic = mqttClient.messageTopic();
+  String message = "";
+  
+  // Nachricht lesen
+  while (mqttClient.available()) {
+    message += (char)mqttClient.read();
+  }
+  
+  appendMonitor("MQTT RX: " + topic + " - " + String(messageSize) + " bytes", "INFO");
+  
+  // Alle Nachrichten aus dem Broadcast-Channel verarbeiten
+  if(topic == mqttBroadcastTopic) {
+    // JSON-Message mit Hex-Payload verarbeiten
+    processMqttMessage(message);
+  }
+  else if(topic.endsWith("/config")) {
+    // Konfiguration-Update
+    appendMonitor("Config Update empfangen: " + message, "INFO");
+  }
+}
+
+// MQTT Verbindung herstellen
+bool connectMQTT() {
+  if(!mqttEnabled || strlen(mqttBroker) == 0) {
+    return false;
+  }
+  
+  if(mqttClient.connected()) {
+    return true;
+  }
+  
+  // SSL-Konfiguration für HiveMQ Cloud
+  mqttWifiClient.setInsecure(); // Für Entwicklung - TODO: Zertifikat in Produktion
+  
+  // Client ID mit Callsign für eindeutige Identifikation
+  String clientId = "ESP32-" + String(callsign) + "-" + String(millis() % 10000);
+  
+  // MQTT Client konfigurieren
+  mqttClient.setId(clientId);
+  mqttClient.setUsernamePassword(mqttUsername, mqttPassword);
+  mqttClient.setKeepAliveInterval(300000); // 5 Minuten Keep-Alive
+  mqttClient.setConnectionTimeout(15000);  // 15 Sekunden Timeout
+  mqttClient.onMessage(onMqttMessage);
+  
+  appendMonitor("MQTT Verbindung zu " + String(mqttBroker) + ":" + String(mqttPort), "INFO");
+  
+  // Verbindung herstellen
+  if(mqttClient.connect(mqttBroker, mqttPort)) {
+    appendMonitor("MQTT verbunden als " + clientId, "INFO");
+    
+    // Nur Broadcast-Topic subscriben (QoS 0 = Live-Only, keine alten Nachrichten)
+    mqttClient.subscribe(mqttBroadcastTopic);
+    
+    appendMonitor("MQTT subscribed: " + mqttBroadcastTopic + " (Live Funk-Kanal)", "INFO");
+    
+    mqttConnected = true;
+    return true;
+  } else {
+    int error = mqttClient.connectError();
+    String errorMsg = "MQTT Fehler: " + String(error);
+    appendMonitor(errorMsg, "ERROR");
+    mqttConnected = false;
+    return false;
+  }
+}
+
+// MQTT Nachricht publizieren (QoS 0, No Retention - Funk-Simulation)
+bool publishMqttMessage(const String& topic, const String& message) {
+  if(!mqttClient.connected() || !mqttEnabled) {
+    appendMonitor("MQTT nicht verbunden", "WARNING");
+    return false;
+  }
+  
+  // Nachricht senden (QoS 0 = Fire-and-Forget, keine Speicherung)
+  mqttClient.beginMessage(topic);
+  mqttClient.print(message);
+  bool success = (mqttClient.endMessage() == 1);
+  
+  /* if(success) {
+    appendMonitor("MQTT Funk TX: " + message, "INFO");
+  } else {
+    appendMonitor("MQTT Funk TX FAILED", "ERROR");
+  } */
+  
+  return success;
+}
+
+// MQTT Loop-Handler
+void handleMqttLoop() {
+  if(!mqttEnabled) return;
+  
+  // MQTT Poll für Message-Handling
+  mqttClient.poll();
+  
+  // Automatische Wiederverbindung bei Verbindungsverlust
+  if(!mqttClient.connected()) {
+    static unsigned long lastReconnect = 0;
+    unsigned long now = millis();
+    
+    if(now - lastReconnect > 30000) { // Alle 30 Sekunden versuchen
+      lastReconnect = now;
+      appendMonitor("MQTT Verbindung verloren - Wiederverbindung...", "WARNING");
+      connectMQTT();
+    }
+  }
+}
+
+// MQTT Verbindungsstatus prüfen
+bool isMqttConnected() {
+  return mqttEnabled && mqttClient.connected();
+}
+
+// ========================================
+// ENDE MQTT FUNKTIONEN  
+// ========================================
 
 // CPU-Frequenz setzen basierend auf Konfiguration
 void setCpuFrequency() {
@@ -743,6 +904,34 @@ void handleRoot() {
   html += "</select>";
   html += "<label for=\"sslvalidation\">SSL-Zertifikatsprüfung</label>";
   html += "<span class=\"helper-text\">Automatisch: HTTPS=verschlüsselt, HTTP=unverschlüsselt</span>";
+  html += "</div>";
+  
+  // MQTT Konfiguration Sektion
+  html += "<div class=\"divider\"></div>";
+  html += "<h5>MQTT Konfiguration</h5>";
+  
+  // MQTT Broker URL
+  html += "<div class=\"input-field custom-row\">";
+  html += "<input type=\"text\" id=\"mqttbroker\" name=\"mqttbroker\" value=\"" + String(mqttBroker) + "\" maxlength=\"63\">";
+  html += "<label for=\"mqttbroker\">MQTT Broker URL</label>";
+  html += "</div>";
+  
+  // MQTT Port
+  html += "<div class=\"input-field custom-row\">";
+  html += "<input type=\"number\" id=\"mqttport\" name=\"mqttport\" value=\"" + String(mqttPort) + "\" min=\"1\" max=\"65535\">";
+  html += "<label for=\"mqttport\">MQTT Port</label>";
+  html += "</div>";
+  
+  // MQTT Username (erweitert)
+  html += "<div class=\"input-field custom-row\">";
+  html += "<input type=\"text\" id=\"mqttuser\" name=\"mqttuser\" value=\"" + String(mqttUsername) + "\" maxlength=\"15\">";
+  html += "<label for=\"mqttuser\">MQTT Username</label>";
+  html += "</div>";
+  
+  // MQTT Password (erweitert auf 30 Zeichen)
+  html += "<div class=\"input-field custom-row\">";
+  html += "<input type=\"password\" id=\"mqttpass\" name=\"mqttpass\" value=\"" + String(mqttPassword) + "\" maxlength=\"30\">";
+  html += "<label for=\"mqttpass\">MQTT Password</label>";
   html += "</div>";
   
   // CPU-Frequenz Auswahl
@@ -1200,15 +1389,15 @@ void handleSave() {
   if (server.hasArg("sslvalidation")) sslValidation = (server.arg("sslvalidation").toInt() == 1);
   if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
   
-  // MQTT Konfiguration verarbeiten
-  if (server.hasArg("mqttenabled")) mqttEnabled = (server.arg("mqttenabled").toInt() == 1);
-  if (server.hasArg("mqttbroker")) strncpy(mqttBroker, server.arg("mqttbroker").c_str(), 31);
+  // MQTT Konfiguration verarbeiten (MQTT ist immer aktiviert)
+  mqttEnabled = true; // MQTT ist die einzige Kommunikationsart
+  if (server.hasArg("mqttbroker")) strncpy(mqttBroker, server.arg("mqttbroker").c_str(), 63);
   if (server.hasArg("mqttport")) mqttPort = server.arg("mqttport").toInt();
-  if (server.hasArg("mqttuser")) strncpy(mqttUsername, server.arg("mqttuser").c_str(), 7);
-  if (server.hasArg("mqttpass")) strncpy(mqttPassword, server.arg("mqttpass").c_str(), 7);
+  if (server.hasArg("mqttuser")) strncpy(mqttUsername, server.arg("mqttuser").c_str(), 15);
+  if (server.hasArg("mqttpass")) strncpy(mqttPassword, server.arg("mqttpass").c_str(), 31);
   
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
-  mqttBroker[31]=0; mqttUsername[7]=0; mqttPassword[7]=0;
+  mqttBroker[63]=0; mqttUsername[15]=0; mqttPassword[31]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
   server.sendHeader("Location", "/", true);
@@ -1593,68 +1782,7 @@ bool isGatewayReachable() {
 }
 
 // Verbinde mit dem stärksten verfügbaren Access Point
-bool connectToStrongestAP() {
-  appendMonitor("Suche nach stärkstem " + String(wifiSsid) + " Access Point...", "INFO");
-  
-  // WiFi-Scan starten
-  int networkCount = WiFi.scanNetworks();
-  
-  if (networkCount == 0) {
-    appendMonitor("Keine WiFi-Netzwerke gefunden!", "ERROR");
-    return false;
-  }
-  
-  // Finde den stärksten AP mit unserem SSID
-  int bestRSSI = -100;
-  int bestNetwork = -1;
-  
-  for (int i = 0; i < networkCount; i++) {
-    String scannedSSID = WiFi.SSID(i);
-    int32_t rssi = WiFi.RSSI(i);
-    
-    appendMonitor("Gefunden: " + scannedSSID + " (RSSI: " + String(rssi) + " dBm)", "DEBUG");
-    
-    // Prüfe ob es unser gewünschtes SSID ist und stärker als der bisherige beste
-    if (scannedSSID == String(wifiSsid) && rssi > bestRSSI) {
-      bestRSSI = rssi;
-      bestNetwork = i;
-    }
-  }
-  
-  if (bestNetwork == -1) {
-    appendMonitor("SSID '" + String(wifiSsid) + "' nicht gefunden!", "ERROR");
-    return false;
-  }
-  
-  // Verbinde mit dem stärksten AP
-  uint8_t* bssid = WiFi.BSSID(bestNetwork);
-  appendMonitor("Verbinde mit stärkstem AP: RSSI " + String(bestRSSI) + " dBm", "INFO");
-  
-  // Verbindung mit spezifischem BSSID (MAC-Adresse des AP)
-  WiFi.begin(wifiSsid, wifiPass, 0, bssid);
-  
-  // Warte auf Verbindung
-  int timeout = 0;
-  while (WiFi.status() != WL_CONNECTED && timeout < 40) {
-    delay(500);
-    timeout++;
-    
-    if (timeout % 10 == 0) {
-      appendMonitor("Verbindung läuft... " + String(timeout/2) + "/20 Sekunden", "INFO");
-    }
-  }
-  
-  // Cleanup scan results
-  WiFi.scanDelete();
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    appendMonitor("Erfolgreich verbunden! RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
-    return true;
-  } else {
-    appendMonitor("Verbindung zum stärksten AP fehlgeschlagen!", "ERROR");
-    return false;
-  }
-}
+
 
 // Erweiterte WiFi-Diagnose
 void logWiFiDiagnostics() {
@@ -1686,23 +1814,27 @@ void checkWiFiConnection() {
     
     wifiReconnectAttempts++;
     
-    // WiFi komplett neustarten bei häufigen Problemen
-    if (wifiReconnectAttempts > 3) {
-      appendMonitor("Mehrere WiFi-Fehler. Führe kompletten WiFi-Reset durch...", "WARNING");
+    // WiFi-Neustart nur bei wiederholten Problemen
+    if (wifiReconnectAttempts > 5) {
+      appendMonitor("WiFi-Reset nach mehreren Fehlversuchen...", "WARNING");
       WiFi.disconnect(true);
-      delay(1000);
-      esp_task_wdt_reset(); // Watchdog während WiFi-Reset
-      WiFi.mode(WIFI_OFF);
-      delay(1000);
-      esp_task_wdt_reset(); // Watchdog während WiFi-Reset
+      delay(500);
       WiFi.mode(WIFI_STA);
-      delay(1000);
-      esp_task_wdt_reset(); // Watchdog während WiFi-Reset
+      delay(500);
       wifiReconnectAttempts = 0;
     }
     
-    // **INTELLIGENTE WiFi-Wiederverbindung mit stärkstem AP**
-    bool reconnected = connectToStrongestAP();
+    // Einfache WiFi-Wiederverbindung
+    WiFi.begin(wifiSsid, wifiPass);
+    
+    // Warten auf Verbindung (max 5 Sekunden)
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(250);
+      attempts++;
+    }
+    
+    bool reconnected = (WiFi.status() == WL_CONNECTED);
     
     if (reconnected) {
       appendMonitor("WiFi erfolgreich wiederverbunden. IP: " + WiFi.localIP().toString() + ", RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
@@ -1728,25 +1860,32 @@ void checkWiFiConnection() {
   }
 }
 
-// Verbesserte WiFi-Verbindungsfunktion mit Stabilität
+// WiFi-Verbindungsfunktion (optimiert für Geschwindigkeit)
 bool tryConnectWiFi() {
   appendMonitor("WLAN Verbindung wird aufgebaut...", "INFO");
   
   // WiFi-Modus konfigurieren
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.persistent(true);
+  WiFi.persistent(false);  // Keine Flash-Schreibvorgänge für schnellere Verbindung
   
-  // **AGGRESSIVE WiFi-Stabilitäts-Optimierungen**
-  WiFi.setSleep(false);                          // Kein WiFi-Sleep
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);          // Maximale Sendeleistung
-  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);  // DHCP zurücksetzen
+  // Standard WiFi-Konfiguration (ohne aggressive Optimierungen)
+  WiFi.setSleep(false);    // Kein WiFi-Sleep für Stabilität
   
-  // **WiFi-Protokoll auf 802.11n begrenzen (bessere Kompatibilität)**
-  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+  // Direkte Verbindung ohne komplexe Protokoll-Einstellungen
+  WiFi.begin(wifiSsid, wifiPass);
   
-  // **INTELLIGENTE AP-WAHL: Verbinde mit stärkstem Access Point**
-  bool connected = connectToStrongestAP();
+  // Warten auf Verbindung (max 8 Sekunden, kürzere Intervalle)
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 32) {
+    delay(250);
+    attempts++;
+    if(attempts % 8 == 0) {  // Alle 2 Sekunden Status
+      appendMonitor("WiFi Verbindung... (" + String(attempts/4) + "s)", "DEBUG");
+    }
+  }
+  
+  bool connected = (WiFi.status() == WL_CONNECTED);
   
   if (connected) {
     appendMonitor("WLAN erfolgreich verbunden mit " + String(wifiSsid), "INFO");
@@ -1759,8 +1898,8 @@ bool tryConnectWiFi() {
     
     return true;
   } else {
-    appendMonitor("WLAN-Verbindung fehlgeschlagen - kein starker AP gefunden", "ERROR");
-    saveCrashLog("WiFi connect to strongest AP failed");
+    appendMonitor("WLAN-Verbindung fehlgeschlagen", "ERROR");
+    saveCrashLog("WiFi connect failed");
     return false;
   }
 }
@@ -2050,6 +2189,15 @@ void setup() {
     saveCrashLog("Watchdog init failed: " + String(result));
   }
   
+  // MQTT Setup (immer aktiviert)
+  if(strlen(mqttBroker) > 0) {
+    setupMqttTopics();
+    appendMonitor("MQTT aktiviert - Broker: " + String(mqttBroker), "INFO");
+    connectMQTT(); // Erste Verbindung versuchen
+  } else {
+    appendMonitor("MQTT-Broker nicht konfiguriert - bitte in Web-Interface einstellen", "WARNING");
+  }
+  
   delay(1000); // Kurz warten nach Watchdog-Aktivierung
 }
 
@@ -2198,434 +2346,138 @@ void loop() {
     lastServerHandle = millis();
   }
 
+  // **MQTT Status Updates** (deaktiviert)
+  /*
+  static unsigned long lastMqttStatus = 0;
+  if (mqttEnabled && millis() - lastMqttStatus > 60000) {
+    if(isMqttConnected()) {
+      // Status-Nachricht als JSON in Broadcast-Kanal
+      char statusBuffer[128];
+      snprintf(statusBuffer, sizeof(statusBuffer), 
+               "{\"timestamp\":%lu,\"callsign\":\"%s\",\"type\":\"status\",\"rssi\":%d,\"heap\":%u,\"uptime\":%lu}", 
+               millis(), callsign, WiFi.RSSI(), ESP.getFreeHeap(), millis()/1000);
+      
+      publishMqttMessage(mqttBroadcastTopic, String(statusBuffer));
+    }
+    lastMqttStatus = millis();
+  }
+  */
+
   static unsigned long lastOled = 0;
   if (millis() - lastOled > 100) { // **RX/TX-RESPONSIVE: 100ms für bessere RX/TX-Anzeige**
     updateOLED();
     lastOled = millis();
   }
 
-  // Senden: RS232 -> HTTP POST zum Server
+  // RS232 KISS-Protokoll Verarbeitung (saubere Nachrichtentrennung)
   if (RS232.available()) {
-    String sdata = "";
-    sdata.reserve(256); // Reserviere Speicher für bessere Performance
-    
     while (RS232.available()) {
       char c = RS232.read();
-      sdata += c;
-      lastTX = millis(); // TX-Indikator setzen (Client SENDET Daten ZUM Server)
-    }
-    
-    // Debug: TX-Event loggen (Daten ZUM Server senden)
-    if (sdata.length() > 0) {
-      // Serial.println("[DEBUG] TX Event (Client→Server) - lastTX set to: " + String(lastTX));
-    }
-    
-    if(sdata.length() > 0 && strlen(serverUrl) > 0) {
-      HTTPClient http;
       
-      String url = String(serverUrl) + "/api/senddata.php";
-      configureHTTPClient(http, url);
-      http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-      
-      String postData;
-      postData.reserve(sdata.length() + 50);
-      postData = "callsign=" + String(callsign) + "&data=" + sdata;
-      
-      // Watchdog vor HTTP-Operation zurücksetzen
-      esp_task_wdt_reset();
-      
-      int httpCode = http.POST(postData);
-      
-      // CPU entlasten nach HTTP-Operation
-      yield();
-      
-      if(httpCode == 200) {
-        String response = http.getString();
-        if(response == "DENY") {
-          appendMonitor("Server verweigert Verbindung - Callsign nicht autorisiert!", "ERROR");
-          authenticationError = true;
-          sslCertificateError = false;
-          connectionError = false;
-        } else {
-          appendMonitor("Server-Antwort: " + response, "DEBUG");
-          authenticationError = false;
-          sslCertificateError = false;
-          connectionError = false;
-        }
-      } else if(httpCode == 403) {
-        appendMonitor("Authentifizierung fehlgeschlagen - Callsign nicht autorisiert!", "ERROR");
-        authenticationError = true;
-        sslCertificateError = false;
-        connectionError = false;
-      } else if(httpCode < 0) {
-        // WiFi-Status bei HTTP-Fehlern überprüfen
-        wl_status_t currentWiFiStatus = WiFi.status();
-        String wifiStatusText = getWiFiStatusText(currentWiFiStatus);
-        String httpErrorText = getHTTPErrorText(httpCode);
-        
-        String url = String(serverUrl) + "/api/senddata.php";
-        if(url.startsWith("https://") && sslValidation) {
-          String errorMsg = "SSL-Zertifikat Validierungsfehler: " + httpErrorText + 
-                           " | WiFi: " + wifiStatusText;
-          appendMonitor(errorMsg, "ERROR");
-          saveCrashLog("SSL cert validation error: " + httpErrorText + " WiFi: " + wifiStatusText);
-          sslCertificateError = true;
-          authenticationError = false;
-          connectionError = false;
-        } else {
-          String errorMsg = "HTTP Verbindungsfehler: " + httpErrorText + 
-                           " | WiFi: " + wifiStatusText + 
-                           " | RSSI: " + String(WiFi.RSSI()) + "dBm";
-          appendMonitor(errorMsg, "ERROR");
-          saveCrashLog("HTTP connection error: " + httpErrorText + " WiFi: " + wifiStatusText + " RSSI: " + String(WiFi.RSSI()));
-          
-          // Bei Verbindungsfehlern detaillierte WiFi-Diagnose (ohne Serial-Output)
-          logWiFiDiagnostics();
-          
-          authenticationError = false;
-          sslCertificateError = false;
-          connectionError = true;
-          
-          // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
-          if (!isGatewayReachable()) {
-            appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
-            forceWiFiReconnect = true;
-          } else {
-            appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
-            // Gateway erreichbar = WiFi OK, Problem liegt am Server
-          }
-        }
-      } else {
-        wl_status_t currentWiFiStatus = WiFi.status();
-        String wifiStatusText = getWiFiStatusText(currentWiFiStatus);
-        String errorMsg = "HTTP POST Fehler: " + String(httpCode) + 
-                         " | WiFi: " + wifiStatusText;
-        
-        appendMonitor(errorMsg, "ERROR");
-        saveCrashLog("HTTP POST error: " + String(httpCode) + " WiFi: " + wifiStatusText);
-        authenticationError = false;
-        sslCertificateError = false;
-        connectionError = true;
-        
-        // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
-        if (!isGatewayReachable()) {
-          appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
-          forceWiFiReconnect = true;
-        } else {
-          appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
-          // Gateway erreichbar = WiFi OK, Problem liegt am Server
-        }
+      // KISS Frame Start Detection (FEND = 0xC0)
+      if (c == 0xC0 && !inKissFrame) {
+        inKissFrame = true;
+        kissBuffer = "";
+        expectedKissLength = 0;
+        currentKissLength = 0;
+        continue;
       }
       
-      http.end(); // **WICHTIG: HTTPClient korrekt schließen**
+      // KISS Frame End Detection  
+      if (c == 0xC0 && inKissFrame) {
+        inKissFrame = false;
+        
+        // Vollständige KISS-Nachricht verarbeiten
+        if(kissBuffer.length() > 0) {
+          processCompleteKissMessage(kissBuffer);
+        }
+        
+        kissBuffer = "";
+        lastTX = millis(); // TX-Indikator setzen
+        continue;
+      }
       
-      // Watchdog nach HTTP-Operation zurücksetzen
-      esp_task_wdt_reset();
+      // Zeichen zum KISS-Buffer hinzufügen (wenn in Frame)
+      if (inKissFrame) {
+        kissBuffer += c;
+        currentKissLength++;
+        
+        // TODO: Length-Field aus KISS-Header extrahieren für Validierung
+        // Für jetzt: Max-Length-Check als Sicherheit
+        if(currentKissLength > 512) {
+          appendMonitor("KISS Frame zu lang - Reset", "ERROR");
+          inKissFrame = false;
+          kissBuffer = "";
+        }
+      }
     }
   }
+}
 
-  // Smart-Polling: Adaptives HTTP-Polling für Hoststar
-  static unsigned long lastFetch = 0;
-  if (millis() - lastFetch > smartPollInterval && strlen(serverUrl) > 0) {
-    
-    // **PRE-CHECK: WiFi-Status vor HTTP-Request prüfen**
-    wl_status_t preStatus = WiFi.status();
-    if (preStatus != WL_CONNECTED) {
-      appendMonitor("Smart-Polling übersprungen - WiFi nicht verbunden: " + getWiFiStatusText(preStatus), "WARNING");
-      logWiFiDiagnostics();
-      forceWiFiReconnect = true;
-      smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Interval verlängern
-      return; // Polling überspringen
+// KISS-Nachricht komplett empfangen und über MQTT senden
+void processCompleteKissMessage(const String& kissData) {
+  if(isMqttConnected()) {
+    // KISS-Daten als Hex-String kodieren für saubere JSON-Übertragung
+    String hexPayload = "";
+    for(int i = 0; i < kissData.length(); i++) {
+      char hex[3];
+      sprintf(hex, "%02X", (unsigned char)kissData[i]);
+      hexPayload += hex;
     }
     
-    // **OPTIMIERT: Task-Kooperation für Stabilität**
-    yield();
+    String mqttMessage = "{";
+    mqttMessage += "\"timestamp\":" + String(millis()) + ",";
+    mqttMessage += "\"callsign\":\"" + String(callsign) + "\",";
+    mqttMessage += "\"type\":\"data\",";
+    mqttMessage += "\"payload_hex\":\"" + hexPayload + "\",";
+    mqttMessage += "\"payload_length\":" + String(kissData.length()) + ",";
+    mqttMessage += "\"rssi\":" + String(WiFi.RSSI()) + ",";
+    mqttMessage += "\"gateway\":\"ESP32-" + String(callsign) + "\"";
+    mqttMessage += "}";
     
-    HTTPClient http;
-    
-    String url = String(serverUrl) + "/api/smart_getdata.php?callsign=" + String(callsign);
-    configureHTTPClient(http, url);
-    
-    appendMonitor("Smart-Poll: " + url, "DEBUG");
-    
-    // Watchdog vor HTTP-Operation zurücksetzen
-    esp_task_wdt_reset();
-    
-    int httpCode = http.GET();
-    
-    if(httpCode == 200) {
-      String response = http.getString();
-      
-      // Parse JSON Response für Smart-Polling
-      if (response.startsWith("{")) {
-        // Extrahiere "data" Feld
-        int dataStart = response.indexOf("\"data\":\"");
-        if (dataStart > 0) {
-          dataStart += 8; // Skip "data":"
-          int dataEnd = response.indexOf("\"", dataStart);
-          if (dataEnd > dataStart) {
-            String base64Data = response.substring(dataStart, dataEnd);
-            
-            if (base64Data.length() > 0) {
-              // Dekodiere Base64-Daten
-              String decodedData = decodeBase64Simple(base64Data);
-              if (decodedData.length() > 0) {
-                // Debug: HEX-Anzeige der Rohdaten
-                String hexData;
-                hexData.reserve(decodedData.length() * 3); // Speicher reservieren
-                for (int i = 0; i < decodedData.length(); i++) {
-                  char hex[4];
-                  sprintf(hex, "%02X", (unsigned char)decodedData[i]);
-                  hexData += hex;
-                  if (i < decodedData.length() - 1) hexData += " ";
-                }
-                appendMonitor("[SMART] RAW HEX: " + hexData, "DEBUG");
-                
-                // RS232 ausgeben (bereits mit korrekten Zeilenendezeichen vom Server)
-                RS232.print(decodedData);
-                RS232.flush(); // Sicherstellen dass Daten gesendet werden
-                lastRX = millis(); // RX-Indikator setzen (Client EMPFÄNGT Daten VOM Server)
-                // Serial.println("[DEBUG] RX Event (Server→Client) - lastRX set to: " + String(lastRX));
-                appendMonitor("[SMART] Empfangen: " + String(decodedData.length()) + " bytes", "INFO");
-                appendMonitor("[SMART] KISS: " + decodeKissFrame(decodedData), "DEBUG");
-              }
-            }
-          }
-        }
-        
-        // Extrahiere nächstes Polling-Intervall
-        int pollStart = response.indexOf("\"next_poll_seconds\":");
-        if (pollStart > 0) {
-          pollStart += 20; // Skip "next_poll_seconds":
-          int pollEnd = response.indexOf(",", pollStart);
-          if (pollEnd == -1) pollEnd = response.indexOf("}", pollStart);
-          
-          if (pollEnd > pollStart) {
-            String pollString = response.substring(pollStart, pollEnd);
-            float nextPollSecondsFloat = pollString.toFloat();
-            if (nextPollSecondsFloat > 0.0 && nextPollSecondsFloat <= 2.0) { // Max 2 Sekunden
-              smartPollInterval = max((unsigned long)(nextPollSecondsFloat * 1000), 2000UL); // Min 2s für weniger CPU-Last
-              appendMonitor("[SMART] Nächstes Poll: " + String(nextPollSecondsFloat, 1) + "s", "DEBUG");
-            }
-          }
-        }
-        
-        authenticationError = false;
-        sslCertificateError = false;
-        connectionError = false;
-      } else {
-        // Alte Format-Kompatibilität
-        if(response.length() > 0 && response != "{\"error\":\"DENY\"}") {
-          RS232.print(response);
-          RS232.flush(); // Daten senden (keine zusätzlichen \r\n)
-          lastRX = millis(); // RX-Indikator setzen (Client EMPFÄNGT Daten VOM Server)
-          Serial.println("[DEBUG] RX Event Legacy (Server→Client) - lastRX set to: " + String(lastRX));
-          appendMonitor("Legacy-Format empfangen: " + response, "INFO");
-        }
-      }
-      
-    } else if(httpCode == 403) {
-      appendMonitor("Smart-Polling: Authentifizierung fehlgeschlagen!", "ERROR");
-      authenticationError = true;
-      sslCertificateError = false; // Reset SSL-Fehler
-      connectionError = false; // Reset Verbindungsfehler
-      smartPollInterval = 30000; // Bei Fehlern langsamer prüfen
-    } else if(httpCode < 0) {
-      // Negative HTTP-Codes sind meist SSL/TLS-Fehler
-      if (String(serverUrl).startsWith("https://") && sslValidation) {
-        appendMonitor("Smart-Polling SSL-Zertifikatsfehler: " + String(httpCode), "ERROR");
-        saveCrashLog("Smart-Polling SSL error: " + String(httpCode));
-        sslCertificateError = true;
-        authenticationError = false;
-        connectionError = false;
-      } else {
-        // HTTP-Verbindungsfehler mit detaillierter WiFi-Diagnose
-        wl_status_t currentWiFiStatus = WiFi.status();
-        String wifiStatusText = getWiFiStatusText(currentWiFiStatus);
-        String httpErrorText = getHTTPErrorText(httpCode);
-        
-        String errorMsg = "Smart-Polling Verbindungsfehler: " + httpErrorText + 
-                         " | WiFi: " + wifiStatusText + 
-                         " | RSSI: " + String(WiFi.RSSI()) + "dBm";
-        
-        appendMonitor(errorMsg, "ERROR");
-        saveCrashLog("Smart-Polling connection error: " + httpErrorText + " WiFi: " + wifiStatusText + " RSSI: " + String(WiFi.RSSI()));
-        
-        // Bei kritischen Verbindungsfehlern erweiterte WiFi-Diagnose (ohne Serial-Output)
-        if(httpCode == -1 || httpCode == -4 || httpCode == -5) {
-          logWiFiDiagnostics();
-        }
-        
-        sslCertificateError = false;
-        authenticationError = false;
-        connectionError = true; // Verbindungsfehler setzen
-        
-        // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
-        IPAddress gateway = WiFi.gatewayIP();
-        bool gatewayReachable = isGatewayReachable();
-        
-        appendMonitor("Gateway " + gateway.toString() + " Check: " + (gatewayReachable ? "OK" : "FAILED"), "DEBUG");
-        
-        if (!gatewayReachable) {
-          appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
-          forceWiFiReconnect = true;
-        } else {
-          appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
-          // Gateway erreichbar = WiFi OK, Problem liegt am Server
-        }
-      }
-      smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
+    bool mqttSuccess = publishMqttMessage(mqttBroadcastTopic, mqttMessage);
+    if(mqttSuccess) {
+      appendMonitor("MQTT Funk TX: " + String(kissData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
     } else {
-      appendMonitor("Smart-Polling Fehler: " + String(httpCode), "ERROR");
-      authenticationError = false;
-      sslCertificateError = false;
-      connectionError = true; // Allgemeine HTTP-Fehler als Verbindungsfehler behandeln
-      smartPollInterval = min(smartPollInterval + 5000, 30000UL); // Graduell verlangsamen
-      
-      // **INTELLIGENTE WiFi-DIAGNOSE: Nur bei Gateway-Problem WiFi reconnect**
-      if (!isGatewayReachable()) {
-        appendMonitor("Gateway nicht erreichbar - WiFi Reconnect", "WARNING");
-        forceWiFiReconnect = true;
-      } else {
-        appendMonitor("Gateway OK - Server-Problem (kein WiFi Reconnect)", "INFO");
-      }
+      appendMonitor("MQTT Funk TX failed", "ERROR");
     }
-    
-    http.end(); // **WICHTIG: HTTPClient korrekt schließen**
-    
-    // **POST-CHECK: WiFi-Status nach HTTP-Request prüfen**
-    wl_status_t postStatus = WiFi.status();
-    if (postStatus != WL_CONNECTED) {
-      appendMonitor("WiFi-Verbindung nach Smart-Polling verloren: " + getWiFiStatusText(postStatus), "ERROR");
-      logWiFiDiagnostics();
-      forceWiFiReconnect = true;
-    }
-    
-    lastFetch = millis();
-    
-    // Watchdog nach HTTP-Operation zurücksetzen
-    esp_task_wdt_reset();
-    
-    // **OPTIMIERT: Task-Kooperation für Stabilität**
-    yield();
-  }
-  
-  // **CPU-LAST OPTIMIERUNG: Kurze Pause zur Entlastung der CPU**
-  delay(10); // 10ms Pause reduziert CPU-Last erheblich ohne Performance-Verlust
-}
-
-void blinkLED() {
-  unsigned long now = millis();
-  if (now - lastBlink > 250) {
-    ledState = !ledState;
-    digitalWrite(LED_PIN, ledState ? HIGH : LOW);
-    lastBlink = now;
-  }
-}
-
-// KISS-Frame-Dekodierung für Debug-Anzeige
-String decodeKissFrame(String rawData) {
-  if (rawData.length() < 3) return "Invalid KISS frame";
-  
-  String result = "";
-  int pos = 0;
-  
-  // KISS-Header prüfen
-  if ((unsigned char)rawData[0] == 0xC0 && (unsigned char)rawData[1] == 0x00) {
-    result += "KISS: ";
-    pos = 2; // Skip KISS header
-  }
-  
-  // AX25-Header dekodieren
-  if (rawData.length() >= pos + 14) {
-    // Destination (6 bytes)
-    String dest = "";
-    for (int i = 0; i < 6; i++) {
-      char c = ((unsigned char)rawData[pos + i]) >> 1;
-      if (c != ' ') dest += c;
-    }
-    pos += 7; // Skip destination + SSID
-    
-    // Source (6 bytes)  
-    String src = "";
-    for (int i = 0; i < 6; i++) {
-      char c = ((unsigned char)rawData[pos + i]) >> 1;
-      if (c != ' ') src += c;
-    }
-    pos += 7; // Skip source + SSID
-    
-    result += src + ">" + dest + ": ";
-    
-    // Control + PID überspringen
-    pos += 2;
-    
-    // Information field (bis zum Ende oder CR)
-    String info = "";
-    while (pos < rawData.length()) {
-      char c = rawData[pos];
-      if (c == 0x0D || c == (char)0xC0) break; // Stop bei CR oder KISS-Ende
-      if (c >= 32 && c <= 126) info += c; // Nur druckbare Zeichen
-      pos++;
-    }
-    result += info;
   } else {
-    result += "Short frame";
+    appendMonitor("MQTT disconnected - KISS message lost", "ERROR");
   }
-  
+}
+
+// Hex-String zu Binärdaten konvertieren
+String hexToBytes(const String& hexString) {
+  String result = "";
+  for(int i = 0; i < hexString.length(); i += 2) {
+    String hexByte = hexString.substring(i, i + 2);
+    char byte = (char)strtol(hexByte.c_str(), NULL, 16);
+    result += byte;
+  }
   return result;
 }
 
-// Base64-Dekodierung für Smart-Polling (korrekte Implementierung)
-String decodeBase64Simple(String input) {
-  String output = "";
-  
-  // Base64 Zeichen-Tabelle
-  const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  
-  // Zähle Padding-Zeichen für korrekte Längenberechnung
-  int paddingCount = 0;
-  String originalInput = input;
-  while (input.endsWith("=")) {
-    input.remove(input.length() - 1);
-    paddingCount++;
-  }
-  
-  int inputLen = input.length();
-  if (inputLen == 0) return "";
-  
-  // Berechne die erwartete Ausgabelänge
-  int expectedOutputLen = (originalInput.length() * 3) / 4 - paddingCount;
-  
-  // Verarbeite 4-Zeichen-Blöcke
-  for (int i = 0; i < inputLen; i += 4) {
-    uint32_t sextet_a = 0, sextet_b = 0, sextet_c = 0, sextet_d = 0;
-    
-    // Konvertiere Zeichen zu Werten
-    char c1 = (i < inputLen) ? input.charAt(i) : 'A';
-    char c2 = (i + 1 < inputLen) ? input.charAt(i + 1) : 'A';
-    char c3 = (i + 2 < inputLen) ? input.charAt(i + 2) : 'A';
-    char c4 = (i + 3 < inputLen) ? input.charAt(i + 3) : 'A';
-    
-    // Finde Index in der Base64-Tabelle
-    for (int j = 0; j < 64; j++) {
-      if (base64_chars[j] == c1) sextet_a = j;
-      if (base64_chars[j] == c2) sextet_b = j;
-      if (base64_chars[j] == c3) sextet_c = j;
-      if (base64_chars[j] == c4) sextet_d = j;
+// MQTT-Nachricht verarbeiten und an RS232 weiterleiten  
+void processMqttMessage(const String& message) {
+  // JSON-Parser für eingehende MQTT-Nachrichten
+  int payloadStart = message.indexOf("\"payload_hex\":\"");
+  if(payloadStart != -1) {
+    payloadStart += 15; // Length of "payload_hex":""
+    int payloadEnd = message.indexOf("\"", payloadStart);
+    if(payloadEnd != -1) {
+      String hexPayload = message.substring(payloadStart, payloadEnd);
+      
+      // Hex zu Binärdaten konvertieren und an RS232 senden
+      String binaryData = hexToBytes(hexPayload);
+      RS232.print(binaryData);
+      
+      appendMonitor("MQTT Funk RX: " + String(binaryData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
+      lastRX = millis();
     }
-    
-    // Kombiniere die 6-Bit-Werte zu 24 Bits
-    uint32_t triple = (sextet_a << 18) + (sextet_b << 12) + (sextet_c << 6) + sextet_d;
-    
-    // Extrahiere nur so viele Bytes wie erwartet
-    if (output.length() < expectedOutputLen) output += (char)((triple >> 16) & 0xFF);
-    if (output.length() < expectedOutputLen) output += (char)((triple >> 8) & 0xFF);
-    if (output.length() < expectedOutputLen) output += (char)(triple & 0xFF);
   }
-  
-  return output;
 }
 
+// OTA-Check Funktion - prüft auf verfügbare Updates
 void handleOTACheck() {
   appendMonitor("OTA: Checking for updates...", "INFO");
   
@@ -2655,6 +2507,7 @@ void handleOTACheck() {
   http.end();
 }
 
+// OTA-Update Funktion - führt Firmware-Update durch
 void handleOTAUpdate() {
   appendMonitor("OTA: Starting firmware update...", "INFO");
   
@@ -2717,5 +2570,15 @@ void handleOTAUpdate() {
       appendMonitor("Neue Version gespeichert: " + String(localVersion), "INFO");
       ESP.restart();
       break;
+  }
+}
+
+// LED-Blink Funktion für Status-Anzeige
+void blinkLED() {
+  unsigned long now = millis();
+  if (now - lastBlink > 250) {
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState ? HIGH : LOW);
+    lastBlink = now;
   }
 }
