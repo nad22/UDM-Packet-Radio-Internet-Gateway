@@ -12,6 +12,8 @@
 #include <HTTPUpdate.h>
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
+#include <math.h>  // Für AFSK-Mathematik (sin, PI)
+#include <driver/i2s.h>  // I2S für MAX98357A Audio
 
 // MQTT Buffer-Größe drastisch erhöhen
 #define MQTT_MAX_PACKET_SIZE 1024
@@ -45,6 +47,8 @@
 #define MQTT_PASSWORD_OFFSET 432       // 32 bytes: MQTT Password
 #define MQTT_SHARED_SECRET_OFFSET 464  // 32 bytes: Shared Secret für Verschlüsselung
 #define CB_CHANNEL_OFFSET 496          // 1 byte: CB-Kanal 1-40
+#define PACKET_AUDIO_OFFSET 497        // 1 byte: Packet Audio aktiviert/deaktiviert
+#define AUDIO_VOLUME_OFFSET 498        // 1 byte: Audio-Lautstärke 0-100
 
 // Crash Log System (EEPROM 500-1023)
 #define CRASH_LOG_START_OFFSET 500
@@ -54,6 +58,27 @@
 #define MAX_CRASH_LOGS 5
 
 #define LED_PIN 2
+#define BUZZER_PIN 4  // Nicht verwendet bei I2S, aber für Kompatibilität
+
+// I2S Audio Pins für MAX98357A
+#define I2S_DOUT_PIN 25  // DIN Pin des MAX98357A
+#define I2S_BCLK_PIN 26  // BCLK Pin des MAX98357A  
+#define I2S_LRC_PIN  27  // LRC Pin des MAX98357A
+
+// Bell 202 Modem Frequenzen für 1200 Baud Packet Radio (AFSK)
+#define FREQ_MARK  1200  // Logische "1" (High Tone)
+#define FREQ_SPACE 2200  // Logische "0" (Low Tone) 
+#define BAUD_RATE  1200  // Bits pro Sekunde
+#define BIT_DURATION_US (1000000 / BAUD_RATE)  // ~833 Mikrosekunden pro Bit
+
+// AFSK-spezifische Parameter für I2S
+#define PHASE_CONTINUOUS true     // Phasen-kontinuierliche AFSK
+#define I2S_SAMPLE_RATE 44100     // CD-Qualität Sample Rate
+#define I2S_BITS_PER_SAMPLE 16    // 16-bit Audio
+#define I2S_BUFFER_SIZE 512       // I2S Buffer Größe
+#ifndef PI
+#define PI 3.14159265359
+#endif
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -103,6 +128,8 @@ char mqttUsername[16] = ""; // MQTT Username (erweitert)
 char mqttPassword[32] = ""; // MQTT Password (erweitert auf 30+1 Zeichen)
 char mqttSharedSecret[32] = ""; // Shared Secret für Payload-Verschlüsselung (31+1 Zeichen)
 uint8_t cbChannel = 1; // CB-Funk Kanal 1-40 (Default: Kanal 1)
+bool packetAudioEnabled = true; // Packet Radio Audio Simulation
+uint8_t audioVolume = 75; // Audio-Lautstärke 0-100% (Default: 75%)
 
 // MQTT Client Objects
 WiFiClientSecure mqttWifiClient;
@@ -203,6 +230,7 @@ bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 bool isGatewayReachable(); // Forward-Deklaration für Gateway-Ping
 void handleDisplayBrightness(); // Forward-Deklaration für Display-Helligkeit API
 void setDisplayBrightness(uint8_t brightness); // Forward-Deklaration für Helligkeit setzen
+void setupI2SAudio(); // Forward-Deklaration für I2S Audio Setup
 
 
 void processCompleteKissMessage(const String& kissData);
@@ -718,6 +746,8 @@ void saveConfig() {
   for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_PASSWORD_OFFSET+i, mqttPassword[i]);
   for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_SHARED_SECRET_OFFSET+i, mqttSharedSecret[i]);
   EEPROM.write(CB_CHANNEL_OFFSET, cbChannel); // CB-Kanal speichern
+  EEPROM.write(PACKET_AUDIO_OFFSET, packetAudioEnabled ? 1 : 0); // Packet Audio speichern
+  EEPROM.write(AUDIO_VOLUME_OFFSET, audioVolume); // Audio-Lautstärke speichern
   
   EEPROM.commit();
 }
@@ -758,6 +788,10 @@ void loadConfig() {
   for (int i = 0; i < 32; ++i) mqttSharedSecret[i] = EEPROM.read(MQTT_SHARED_SECRET_OFFSET+i);
   mqttSharedSecret[31] = 0;
   cbChannel = EEPROM.read(CB_CHANNEL_OFFSET); // CB-Kanal laden
+  uint8_t audioSetting = EEPROM.read(PACKET_AUDIO_OFFSET); // Packet Audio laden
+  packetAudioEnabled = (audioSetting == 1);
+  audioVolume = EEPROM.read(AUDIO_VOLUME_OFFSET); // Audio-Lautstärke laden
+  if (audioVolume > 100) audioVolume = 75; // Fallback auf 75% wenn ungültig
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
@@ -1211,6 +1245,42 @@ void handleRoot() {
   html += R"=====(>80 MHz (Energiesparen)</option>
               </select>
               <label for="cpufreq">CPU-Frequenz</label>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Audio Konfiguration -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">volume_up</i>Packet Radio Audio</span>
+            <div class="input-field custom-row">
+              <select id="packetaudio" name="packetaudio">
+                <option value="1")=====";
+  if(packetAudioEnabled) html += " selected";
+  html += R"=====(>Aktiviert</option>
+                <option value="0")=====";
+  if(!packetAudioEnabled) html += " selected";
+  html += R"=====(>Deaktiviert</option>
+              </select>
+              <label for="packetaudio">1200 Baud Audio Simulation</label>
+              <span class="helper-text">I2S-AFSK Audio über MAX98357A (Pins 25/26/27). Studio-Qualität Bell 202 Sound!</span>
+            </div>
+            <div class="input-field custom-row">
+              <select id="audiovolume" name="audiovolume">
+                <option value="25")=====";
+  if(audioVolume >= 20 && audioVolume <= 30) html += " selected";
+  html += R"=====(>25% (Leise)</option>
+                <option value="50")=====";
+  if(audioVolume >= 45 && audioVolume <= 55) html += " selected";
+  html += R"=====(>50% (Normal)</option>
+                <option value="75")=====";
+  if(audioVolume >= 70 && audioVolume <= 80) html += " selected";
+  html += R"=====(>75% (Laut)</option>
+                <option value="100")=====";
+  if(audioVolume >= 95) html += " selected";
+  html += R"=====(>100% (Maximum)</option>
+              </select>
+              <label for="audiovolume">Audio-Lautstärke</label>
             </div>
           </div>
         </div>
@@ -1786,6 +1856,17 @@ void handleSave() {
     if(newChannel >= 1 && newChannel <= 40) {
       cbChannel = newChannel;
       appendMonitor("CB-Kanal geändert auf " + String(cbChannel), "INFO");
+    }
+  }
+  if (server.hasArg("packetaudio")) {
+    packetAudioEnabled = (server.arg("packetaudio").toInt() == 1);
+    appendMonitor("Packet Audio " + String(packetAudioEnabled ? "aktiviert" : "deaktiviert"), "INFO");
+  }
+  if (server.hasArg("audiovolume")) {
+    uint8_t newVolume = server.arg("audiovolume").toInt();
+    if(newVolume >= 0 && newVolume <= 100) {
+      audioVolume = newVolume;
+      appendMonitor("Audio-Lautstärke gesetzt auf " + String(audioVolume) + "%", "INFO");
     }
   }
   
@@ -2562,6 +2643,9 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  
+  // I2S für MAX98357A Audio-Ausgabe konfigurieren
+  setupI2SAudio();
 
   // EEPROM früh initialisieren für CPU-Frequenz-Check
   EEPROM.begin(EEPROM_SIZE);
@@ -2935,6 +3019,9 @@ void processCompleteKissMessage(const String& kissData) {
     bool mqttSuccess = publishMqttMessage(mqttBroadcastTopic, mqttMessage);
     if(mqttSuccess) {
       appendMonitor("MQTT Funk TX: " + String(kissData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
+      
+      // Packet Radio Audio für TX abspielen
+      playPacketAudio(hexPayload, true);
     } else {
       appendMonitor("MQTT Funk TX failed", "ERROR");
     }
@@ -3008,6 +3095,11 @@ void processMqttMessage(const String& message) {
       // Hex-Daten 1:1 an RS232 senden (bereits vollständige KISS-Frames)
       RS232.print(binaryData);
       RS232.flush(); // Stelle sicher, dass Daten sofort gesendet werden
+      
+      // Packet Radio Audio für RX abspielen (mit Original-Hex vor Entschlüsselung)
+      String originalHex = message.substring(message.indexOf("\"payload_hex\":\"") + 15);
+      originalHex = originalHex.substring(0, originalHex.indexOf("\""));
+      playPacketAudio(originalHex, false);
       
       // Sender-Info für Monitor extrahieren
       String senderInfo = "";
@@ -3192,4 +3284,187 @@ String decryptPayload(const String& encryptedHexPayload) {
   }
   
   return decrypted;
+}
+
+// ==================== I2S AUDIO SETUP FÜR MAX98357A ====================
+
+void setupI2SAudio() {
+  // I2S Konfiguration für MAX98357A
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = I2S_SAMPLE_RATE,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,  // Mono
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = I2S_BUFFER_SIZE,
+    .use_apll = false,
+    .tx_desc_auto_clear = true,
+    .fixed_mclk = 0
+  };
+
+  // I2S Pin-Konfiguration
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_BCLK_PIN,
+    .ws_io_num = I2S_LRC_PIN,
+    .data_out_num = I2S_DOUT_PIN,
+    .data_in_num = I2S_PIN_NO_CHANGE
+  };
+
+  // I2S installieren und starten
+  esp_err_t result = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  if (result != ESP_OK) {
+    appendMonitor("I2S Driver Installation failed: " + String(result), "ERROR");
+    return;
+  }
+  
+  result = i2s_set_pin(I2S_NUM_0, &pin_config);
+  if (result != ESP_OK) {
+    appendMonitor("I2S Pin Setup failed: " + String(result), "ERROR");
+    return;
+  }
+  
+  appendMonitor("I2S Audio für MAX98357A initialisiert", "INFO");
+}
+
+// Spielt Audio-Samples über I2S aus
+void playI2SSamples(int16_t* samples, size_t sampleCount) {
+  if (!packetAudioEnabled) return;
+  
+  size_t bytesWritten;
+  esp_err_t result = i2s_write(I2S_NUM_0, samples, sampleCount * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+  
+  if (result != ESP_OK) {
+    appendMonitor("I2S Write Error: " + String(result), "ERROR");
+  }
+}
+
+// ==================== PACKET RADIO AUDIO SIMULATION (AFSK mit I2S) ====================
+
+// Globale Phase für phasen-kontinuierliche AFSK
+static float currentPhase = 0.0;
+
+// Spielt einen Ton mit I2S-basierter AFSK für Studio-Qualität
+void playAFSKToneI2S(int frequency, int durationUs, bool isTx = false) {
+  if (!packetAudioEnabled) return;
+  
+  // TX/RX Frequenz-Offset für authentischen Sound
+  int actualFreq = isTx ? (frequency - 50) : frequency;
+  
+  // Berechne Anzahl der Samples
+  int sampleCount = (durationUs * I2S_SAMPLE_RATE) / 1000000;
+  if (sampleCount <= 0) return;
+  
+  // Sample-Buffer erstellen
+  int16_t* samples = (int16_t*)malloc(sampleCount * sizeof(int16_t));
+  if (!samples) return;
+  
+  float phaseIncrement = 2.0 * PI * actualFreq / I2S_SAMPLE_RATE;
+  
+  // Generiere Sinus-Samples mit phasen-kontinuierlicher AFSK
+  for (int i = 0; i < sampleCount; i++) {
+    currentPhase += phaseIncrement;
+    if (currentPhase >= 2.0 * PI) currentPhase -= 2.0 * PI;
+    
+    // Sinus zu 16-bit Sample mit Lautstärke-Kontrolle
+    float sineValue = sin(currentPhase);
+    int16_t amplitude = (int16_t)(30000 * audioVolume / 100); // Lautstärke 0-100%
+    samples[i] = (int16_t)(sineValue * amplitude);
+  }
+  
+  // Über I2S ausgeben
+  playI2SSamples(samples, sampleCount);
+  
+  // Memory freigeben
+  free(samples);
+}
+
+// Fallback: Einfacher Ton für Sync (Kompatibilität)
+void playTone(int frequency, int durationUs) {
+  if (!packetAudioEnabled) return;
+  
+  // Für Sync-Töne einfaches Rechteck verwenden (schneller)
+  int sampleCount = (durationUs * I2S_SAMPLE_RATE) / 1000000;
+  if (sampleCount <= 0) return;
+  
+  int16_t* samples = (int16_t*)malloc(sampleCount * sizeof(int16_t));
+  if (!samples) return;
+  
+  int samplesPerHalfCycle = I2S_SAMPLE_RATE / (2 * frequency);
+  
+  for (int i = 0; i < sampleCount; i++) {
+    // Rechteck-Signal für Sync mit Lautstärke-Kontrolle
+    bool high = ((i / samplesPerHalfCycle) % 2) == 0;
+    int16_t amplitude = (int16_t)(20000 * audioVolume / 100); // Lautstärke 0-100%
+    samples[i] = high ? amplitude : -amplitude;
+  }
+  
+  playI2SSamples(samples, sampleCount);
+  free(samples);
+}
+
+// Spielt ein einzelnes Bit als I2S-AFSK (Bell 202 Standard)
+void playAFSKBit(bool bit, bool isTx = false) {
+  if (!packetAudioEnabled) return;
+  
+  int frequency = bit ? FREQ_MARK : FREQ_SPACE; // 1=1200Hz (Mark), 0=2200Hz (Space)
+  playAFSKToneI2S(frequency, BIT_DURATION_US, isTx);
+}
+
+// Fallback: Einfache Bit-Funktion (für Kompatibilität)
+void playBit(bool bit, bool isTx = false) {
+  playAFSKBit(bit, isTx);
+}
+
+// Spielt ein Byte als 8 Bits (LSB zuerst wie bei serieller Übertragung)
+void playByte(uint8_t data, bool isTx = false) {
+  if (!packetAudioEnabled) return;
+  
+  // Start Bit (immer 0)
+  playBit(false, isTx);
+  
+  // 8 Daten-Bits (LSB zuerst)
+  for (int i = 0; i < 8; i++) {
+    bool bit = (data >> i) & 1;
+    playBit(bit, isTx);
+  }
+  
+  // Stop Bit (immer 1)
+  playBit(true, isTx);
+}
+
+// Spielt Packet Radio Audio für KISS Frame
+void playPacketAudio(const String& hexData, bool isTx) {
+  if (!packetAudioEnabled) return;
+  
+  // Kurze Pause vor dem Frame
+  delay(50);
+  
+  // TX/RX Unterscheidung: TX etwas tiefer
+  int markFreq = isTx ? (FREQ_MARK - 100) : FREQ_MARK;
+  int spaceFreq = isTx ? (FREQ_SPACE - 100) : FREQ_SPACE;
+  
+  // Präambel: ~200ms von abwechselnden Tönen für Sync
+  for (int i = 0; i < 24; i++) {
+    playTone(i % 2 ? markFreq : spaceFreq, 8000); // Kurze Sync-Töne
+  }
+  
+  // KISS Frame Start Flag (C0)
+  playByte(0xC0, isTx);
+  
+  // Hex-String zu Bytes und abspielen
+  for (int i = 0; i < hexData.length(); i += 2) {
+    if (i + 1 < hexData.length()) {
+      String hexByte = hexData.substring(i, i + 2);
+      uint8_t byteVal = (uint8_t)strtol(hexByte.c_str(), NULL, 16);
+      playByte(byteVal, isTx);
+    }
+  }
+  
+  // KISS Frame End Flag (C0)
+  playByte(0xC0, isTx);
+  
+  // Kurze Pause nach dem Frame
+  delay(30);
 }
