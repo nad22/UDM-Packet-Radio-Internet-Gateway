@@ -35,18 +35,24 @@
 #define DISPLAYTYPE_OFFSET 345  // Offset für Display-Typ
 #define SSL_VALIDATION_OFFSET 346  // Offset für SSL-Zertifikat-Validierung
 #define CPU_FREQUENCY_OFFSET 347   // Offset für CPU-Frequenz (1 byte: 0=240MHz, 1=160MHz, 2=80MHz)
+#define DISPLAY_BRIGHTNESS_OFFSET 348   // Offset für Display-Helligkeit (1 byte: 0-255)
 
-// MQTT Configuration (EEPROM 348-399)
-#define MQTT_ENABLED_OFFSET 348        // 1 byte: 0=HTTP, 1=MQTT
+// MQTT Configuration (EEPROM 349-399)
+#define MQTT_ENABLED_OFFSET 349        // 1 byte: 0=HTTP, 1=MQTT
+#define MQTT_BROKER_OFFSET 350         // 64 bytes: MQTT Broker URL
+#define MQTT_PORT_OFFSET 414           // 2 bytes: MQTT Port (uint16_t)
+#define MQTT_USERNAME_OFFSET 416       // 16 bytes: MQTT Username
+#define MQTT_PASSWORD_OFFSET 432       // 32 bytes: MQTT Password
+#define CB_CHANNEL_OFFSET 464          // 1 byte: CB-Kanal 1-40
 #define MQTT_BROKER_OFFSET 349         // 64 bytes für Broker URL (erweitert für HiveMQ Cloud)
 #define MQTT_PORT_OFFSET 413           // 2 bytes für Port (8883)
 #define MQTT_USERNAME_OFFSET 415       // 16 bytes für Username (erweitert)
 #define MQTT_PASSWORD_OFFSET 431       // 32 bytes für Password (erweitert auf 30 Zeichen)
 
-// Crash Log System (EEPROM 465-1023)
-#define CRASH_LOG_START_OFFSET 465
-#define CRASH_LOG_COUNT_OFFSET 465  // 4 bytes für Anzahl der Logs
-#define CRASH_LOG_ENTRIES_OFFSET 469  // Crash Log Einträge (5 x 120 = 600 bytes)
+// Crash Log System (EEPROM 466-1023)
+#define CRASH_LOG_START_OFFSET 466
+#define CRASH_LOG_COUNT_OFFSET 466  // 4 bytes für Anzahl der Logs
+#define CRASH_LOG_ENTRIES_OFFSET 470  // Crash Log Einträge (5 x 120 = 600 bytes)
 #define CRASH_LOG_ENTRY_SIZE 120  // Timestamp (20) + Message (100)
 #define MAX_CRASH_LOGS 5
 
@@ -90,6 +96,7 @@ uint8_t logLevel = 1;
 uint8_t displayType = DISPLAY_SSD1306; // Default: SSD1306 (kleineres Display)
 bool sslValidation = true; // Default: SSL-Validierung aktiviert für sichere Verbindungen
 uint8_t cpuFrequency = 0; // Default: 240 MHz (0=240MHz, 1=160MHz, 2=80MHz, 3=40MHz, 4=26MHz)
+uint8_t displayBrightness = 128; // Default: 50% Helligkeit (0-255)
 
 // MQTT Configuration
 bool mqttEnabled = true; // Default: MQTT mode (reine MQTT-Implementierung)
@@ -97,6 +104,7 @@ char mqttBroker[64] = ""; // HiveMQ Cloud Broker URL (erweitert für längere UR
 uint16_t mqttPort = 8883; // Default: SSL Port
 char mqttUsername[16] = ""; // MQTT Username (erweitert)
 char mqttPassword[32] = ""; // MQTT Password (erweitert auf 30+1 Zeichen)
+uint8_t cbChannel = 1; // CB-Funk Kanal 1-40 (Default: Kanal 1)
 
 // MQTT Client Objects
 WiFiClientSecure mqttWifiClient;
@@ -109,7 +117,7 @@ bool mqttConnected = false;
 // - Message Expiry: 0 (keine Speicherung alter Nachrichten)  
 // - Retain: disabled (keine persistenten Nachrichten)
 // - QoS: 0 (Fire-and-Forget wie echter Funk)
-String mqttBroadcastTopic = "udmprig/rf/all";  // Ein globaler "Funk-Kanal"
+String mqttBroadcastTopic = "udmprig/rf/1";  // Dynamischer CB-Funk-Kanal (wird in setupMqttTopics() gesetzt)
 
 // KISS Protocol Buffer für saubere Nachrichtentrennung
 static String kissBuffer = "";
@@ -191,6 +199,8 @@ void logWiFiDiagnostics(); // Forward-Deklaration für erweiterte WiFi-Diagnose
 bool tryConnectWiFi(); // Forward-Deklaration für WiFi-Verbindung
 bool initDisplay(); // Forward-Deklaration für Display-Initialisierung
 bool isGatewayReachable(); // Forward-Deklaration für Gateway-Ping
+void handleDisplayBrightness(); // Forward-Deklaration für Display-Helligkeit API
+void setDisplayBrightness(uint8_t brightness); // Forward-Deklaration für Helligkeit setzen
 
 
 void processCompleteKissMessage(const String& kissData);
@@ -237,12 +247,14 @@ bool initDisplay() {
     }
     display_ssd1306.clearDisplay();
     display_ssd1306.display();
+    setDisplayBrightness(displayBrightness); // Gespeicherte Helligkeit anwenden
   } else {
     if (!display_sh1106.begin(0x3C)) {
       return false;
     }
     display_sh1106.clearDisplay();
     display_sh1106.display();
+    setDisplayBrightness(displayBrightness); // Gespeicherte Helligkeit anwenden
   }
   return true;
 }
@@ -441,6 +453,162 @@ void drawRXTXRects() {
   }
 }
 
+// 7-Segment-Ziffer zeichnen (CB-Funk Style mit getrennten Segmenten!)
+void draw7SegmentDigit(int x, int y, uint8_t digit) {
+  // 7-Segment Pattern für Ziffern 0-9
+  bool segments[10][7] = {
+    {1,1,1,1,1,1,0}, // 0: ABCDEF
+    {0,1,1,0,0,0,0}, // 1: BC
+    {1,1,0,1,1,0,1}, // 2: ABDEG
+    {1,1,1,1,0,0,1}, // 3: ABCDG
+    {0,1,1,0,0,1,1}, // 4: BCFG
+    {1,0,1,1,0,1,1}, // 5: ACDFG
+    {1,0,1,1,1,1,1}, // 6: ACDEFG
+    {1,1,1,0,0,0,0}, // 7: ABC
+    {1,1,1,1,1,1,1}, // 8: ABCDEFG
+    {1,1,1,1,0,1,1}  // 9: ABCDFG
+  };
+  
+  if(digit > 9) return;
+  
+  int segLen = 6;   // Segment Länge (kleiner für mehr Platz)
+  int segThick = 1; // Segment Dicke (dünn)
+  int gap = 1;      // Abstand zwischen Segmenten (WICHTIG!)
+  
+  // Segment-Positionen mit Lücken zwischen den Segmenten
+  if (displayType == DISPLAY_SSD1306) {
+    // Segment A (oben)
+    if(segments[digit][0]) display_ssd1306.fillRect(x+gap+1, y, segLen, segThick, getDisplayWhite());
+    // Segment B (rechts oben)  
+    if(segments[digit][1]) display_ssd1306.fillRect(x+segLen+gap+1, y+gap+1, segThick, segLen-1, getDisplayWhite());
+    // Segment C (rechts unten)
+    if(segments[digit][2]) display_ssd1306.fillRect(x+segLen+gap+1, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
+    // Segment D (unten)
+    if(segments[digit][3]) display_ssd1306.fillRect(x+gap+1, y+2*segLen+2*gap+1, segLen, segThick, getDisplayWhite());
+    // Segment E (links unten)
+    if(segments[digit][4]) display_ssd1306.fillRect(x, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
+    // Segment F (links oben)
+    if(segments[digit][5]) display_ssd1306.fillRect(x, y+gap+1, segThick, segLen-1, getDisplayWhite());
+    // Segment G (mitte)
+    if(segments[digit][6]) display_ssd1306.fillRect(x+gap+1, y+segLen+gap+1, segLen, segThick, getDisplayWhite());
+  } else {
+    // Segment A (oben)
+    if(segments[digit][0]) display_sh1106.fillRect(x+gap+1, y, segLen, segThick, getDisplayWhite());
+    // Segment B (rechts oben)
+    if(segments[digit][1]) display_sh1106.fillRect(x+segLen+gap+1, y+gap+1, segThick, segLen-1, getDisplayWhite());
+    // Segment C (rechts unten)
+    if(segments[digit][2]) display_sh1106.fillRect(x+segLen+gap+1, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
+    // Segment D (unten)
+    if(segments[digit][3]) display_sh1106.fillRect(x+gap+1, y+2*segLen+2*gap+1, segLen, segThick, getDisplayWhite());
+    // Segment E (links unten)
+    if(segments[digit][4]) display_sh1106.fillRect(x, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
+    // Segment F (links oben)
+    if(segments[digit][5]) display_sh1106.fillRect(x, y+gap+1, segThick, segLen-1, getDisplayWhite());
+    // Segment G (mitte)
+    if(segments[digit][6]) display_sh1106.fillRect(x+gap+1, y+segLen+gap+1, segLen, segThick, getDisplayWhite());
+  }
+}
+
+// CB-Kanal Display mit "CH" + 7-Segment Ziffern + RX/TX (komplett mittig zentriert)
+void drawCBChannelDisplay() {
+  // Berechne zentrierte Y-Position zwischen horizontal line (32) und Display-Unterkante (64)
+  int centerY = 45; // Zentriert zwischen Linie und Unterkante
+  
+  // Berechne horizontale Zentrierung für die KOMPLETTE CB-Display-Gruppe
+  // CH(12px) + Abstand(6px) + Ziffer1(9px) + Trennung(2px) + Ziffer2(9px) + Abstand(8px) + RX/TX(29px) = 75px total
+  int displayWidth = 128; // Beide Displays 128px breit
+  int totalDisplayWidth = 75; // Gesamtbreite der kompletten CB-Anzeige mit RX/TX
+  int startX = (displayWidth - totalDisplayWidth) / 2; // Perfekte Zentrierung der ganzen Gruppe
+  
+  // "CH" Text (mittig positioniert)
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.setTextSize(1);
+    display_ssd1306.setTextColor(getDisplayWhite());
+    display_ssd1306.setCursor(startX, centerY + 1);
+    display_ssd1306.print("CH");
+  } else {
+    display_sh1106.setTextSize(1);
+    display_sh1106.setTextColor(getDisplayWhite());
+    display_sh1106.setCursor(startX, centerY + 1);
+    display_sh1106.print("CH");
+  }
+  
+  // CB-Kanal mit führender Null (7-Segment Style) - mittig positioniert
+  uint8_t tens = cbChannel / 10;
+  uint8_t ones = cbChannel % 10;
+  
+  int digit1X = startX + 18; // Nach "CH" + kleiner Abstand
+  int digit2X = startX + 29; // Nach erster Ziffer + 2 Pixel Trennung
+  int digitY = centerY - 2;  // Etwas höher als CH für bessere Optik
+  
+  // Erste Ziffer (oder führende 0)
+  if(cbChannel < 10) {
+    draw7SegmentDigit(digit1X, digitY, 0);
+  } else {
+    draw7SegmentDigit(digit1X, digitY, tens);
+  }
+  
+  // Zweite Ziffer
+  draw7SegmentDigit(digit2X, digitY, ones);
+  
+  // RX/TX Boxes rechts von der CB-Anzeige (als Teil der zentrierten Gruppe)
+  int boxX = startX + 46;    // Nach CB-Ziffern + Abstand (angepasst für 2px Trennung)
+  int labelX = boxX + 17;    // Labels rechts neben den Boxen
+  int boxY1 = centerY - 2;   // Erste Box (RX)
+  int boxY2 = centerY + 7;   // Zweite Box (TX)
+  
+  // RX Box und Label
+  if (displayType == DISPLAY_SSD1306) {
+    // RX Box
+    if (millis() - lastRX < RS232_ACTIVE_TIME) {
+      display_ssd1306.fillRect(boxX, boxY1, 15, 8, getDisplayWhite());
+    } else {
+      display_ssd1306.drawRect(boxX, boxY1, 15, 8, getDisplayWhite());
+    }
+    
+    // RX Label rechts neben Box
+    display_ssd1306.setTextSize(1);
+    display_ssd1306.setTextColor(getDisplayWhite());
+    display_ssd1306.setCursor(labelX, boxY1 + 1);
+    display_ssd1306.print("RX");
+    
+    // TX Box
+    if (millis() - lastTX < RS232_ACTIVE_TIME) {
+      display_ssd1306.fillRect(boxX, boxY2, 15, 8, getDisplayWhite());
+    } else {
+      display_ssd1306.drawRect(boxX, boxY2, 15, 8, getDisplayWhite());
+    }
+    
+    // TX Label rechts neben Box
+    display_ssd1306.setCursor(labelX, boxY2 + 1);
+    display_ssd1306.print("TX");
+  } else {
+    // RX Box
+    if (millis() - lastRX < RS232_ACTIVE_TIME) {
+      display_sh1106.fillRect(boxX, boxY1, 15, 8, getDisplayWhite());
+    } else {
+      display_sh1106.drawRect(boxX, boxY1, 15, 8, getDisplayWhite());
+    }
+    
+    // RX Label rechts neben Box
+    display_sh1106.setTextSize(1);
+    display_sh1106.setTextColor(getDisplayWhite());
+    display_sh1106.setCursor(labelX, boxY1 + 1);
+    display_sh1106.print("RX");
+    
+    // TX Box
+    if (millis() - lastTX < RS232_ACTIVE_TIME) {
+      display_sh1106.fillRect(boxX, boxY2, 15, 8, getDisplayWhite());
+    } else {
+      display_sh1106.drawRect(boxX, boxY2, 15, 8, getDisplayWhite());
+    }
+    
+    // TX Label rechts neben Box
+    display_sh1106.setCursor(labelX, boxY2 + 1);
+    display_sh1106.print("TX");
+  }
+}
+
 void updateOLED() {
   // WiFi-Signalstärke nur alle 1000ms abfragen (Performance-Optimierung)
   static unsigned long lastWiFiRSSI = 0;
@@ -487,7 +655,7 @@ void updateOLED() {
     display_ssd1306.setCursor((SCREEN_WIDTH - w) / 2, 22);
     display_ssd1306.print(mqttStatus);
     display_ssd1306.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
-    drawRXTXRects();
+    drawCBChannelDisplay(); // Neues CB-Kanal Display statt drawRXTXRects()
     display_ssd1306.display();
   } else {
     display_sh1106.clearDisplay();
@@ -515,7 +683,7 @@ void updateOLED() {
     display_sh1106.setCursor((SCREEN_WIDTH - w) / 2, 22);
     display_sh1106.print(mqttStatus);
     display_sh1106.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
-    drawRXTXRects();
+    drawCBChannelDisplay(); // Neues CB-Kanal Display statt drawRXTXRects()
     display_sh1106.display();
   }
 }
@@ -536,6 +704,7 @@ void saveConfig() {
   EEPROM.write(DISPLAYTYPE_OFFSET, displayType);  // Display-Typ speichern
   EEPROM.write(SSL_VALIDATION_OFFSET, sslValidation ? 1 : 0);  // SSL-Validierung speichern
   EEPROM.write(CPU_FREQUENCY_OFFSET, cpuFrequency);  // CPU-Frequenz speichern
+  EEPROM.write(DISPLAY_BRIGHTNESS_OFFSET, displayBrightness);  // Display-Helligkeit speichern
   
   // MQTT Configuration speichern
   EEPROM.write(MQTT_ENABLED_OFFSET, mqttEnabled ? 1 : 0);
@@ -544,6 +713,7 @@ void saveConfig() {
   EEPROM.write(MQTT_PORT_OFFSET+1, mqttPort & 0xFF);
   for (int i = 0; i < 16; ++i) EEPROM.write(MQTT_USERNAME_OFFSET+i, mqttUsername[i]);
   for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_PASSWORD_OFFSET+i, mqttPassword[i]);
+  EEPROM.write(CB_CHANNEL_OFFSET, cbChannel); // CB-Kanal speichern
   
   EEPROM.commit();
 }
@@ -570,6 +740,7 @@ void loadConfig() {
   displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Display-Typ laden
   sslValidation = EEPROM.read(SSL_VALIDATION_OFFSET) == 1;  // SSL-Validierung laden
   cpuFrequency = EEPROM.read(CPU_FREQUENCY_OFFSET);  // CPU-Frequenz laden
+  displayBrightness = EEPROM.read(DISPLAY_BRIGHTNESS_OFFSET);  // Display-Helligkeit laden
   
   // MQTT Configuration laden
   mqttEnabled = EEPROM.read(MQTT_ENABLED_OFFSET) == 1;
@@ -580,6 +751,7 @@ void loadConfig() {
   mqttUsername[15] = 0;
   for (int i = 0; i < 32; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
   mqttPassword[31] = 0;
+  cbChannel = EEPROM.read(CB_CHANNEL_OFFSET); // CB-Kanal laden
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
@@ -604,9 +776,16 @@ void loadConfig() {
     mqttPort = 8883; // Default SSL Port
     appendMonitor("MQTT Port ungültig, auf 8883 gesetzt", "WARNING");
   }
-  if(mqttEnabled && strlen(mqttBroker) == 0) {
-    appendMonitor("MQTT aktiviert aber Broker-URL leer!", "WARNING");
-    mqttEnabled = false; // Deaktiviere MQTT wenn Broker fehlt
+  // MQTT ist immer aktiviert (reine MQTT-Implementierung)
+  mqttEnabled = true;
+  if(strlen(mqttBroker) == 0) {
+    appendMonitor("MQTT Broker-URL nicht konfiguriert - bitte einstellen!", "WARNING");
+  }
+  
+  // CB-Kanal validieren (1-40)
+  if(cbChannel < 1 || cbChannel > 40 || cbChannel == 0xFF) {
+    cbChannel = 1; // Default CB-Kanal 1
+    appendMonitor("CB-Kanal ungültig, auf Kanal 1 gesetzt", "WARNING");
   }
   
   // Validiere CPU-Frequenz-Wert und korrigiere problematische Einstellungen
@@ -627,11 +806,14 @@ void loadConfig() {
 // MQTT FUNKTIONEN
 // ========================================
 
-// MQTT Topics basierend auf Callsign konfigurieren (Broadcast-Modus)
+// MQTT Topics basierend auf CB-Kanal konfigurieren (Broadcast-Modus)
 void setupMqttTopics() {
+  // CB-Funk Topic dynamisch generieren: udmprig/rf/1 bis udmprig/rf/40
+  mqttBroadcastTopic = "udmprig/rf/" + String(cbChannel);
+  
   if(strlen(callsign) > 0) {
-    appendMonitor("MQTT Broadcast-Modus konfiguriert für " + String(callsign), "INFO");
-    appendMonitor("Funk-Simulation: Alle hören auf " + mqttBroadcastTopic, "INFO");
+    appendMonitor("MQTT CB-Kanal " + String(cbChannel) + " für " + String(callsign), "INFO");
+    appendMonitor("Funk-Simulation: " + mqttBroadcastTopic, "INFO");
   }
 }
 
@@ -799,6 +981,41 @@ void handleRoot() {
       .container { max-width: 1200px; }
       .wifi-signal-bar { background: #e0e0e0; border-radius: 10px; height: 20px; overflow: hidden; }
       .wifi-signal-fill { height: 100%; border-radius: 10px; transition: width 0.5s ease; }
+      
+      /* Custom Slider Styles */
+      input[type=range] {
+        -webkit-appearance: none;
+        height: 12px !important;
+        border-radius: 8px;
+        background: linear-gradient(to right, #ddd 0%, #1976d2 100%);
+        outline: none;
+        cursor: pointer;
+      }
+      input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: #1976d2;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        transition: all 0.2s ease;
+      }
+      input[type=range]::-webkit-slider-thumb:hover {
+        background: #1565c0;
+        transform: scale(1.1);
+      }
+      input[type=range]::-moz-range-thumb {
+        width: 24px;
+        height: 24px;
+        border-radius: 50%;
+        background: #1976d2;
+        cursor: pointer;
+        border: none;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      }
+      
       @media (max-width: 768px) { body { padding: 10px; } }
     </style>
   </head>
@@ -859,6 +1076,48 @@ void handleRoot() {
   }
   html += R"=====(</select>
           <label for="baudrate">RS232 Baudrate</label>
+        </div>
+        <div class="input-field custom-row">
+          <select id="cbchannel" name="cbchannel">
+  )=====";
+  // CB-Kanal 1-40 Dropdown generieren
+  for(int i = 1; i <= 40; i++) {
+    html += "<option value='";
+    html += String(i);
+    html += "'";
+    if(cbChannel == i) html += " selected";
+    html += ">Kanal ";
+    if(i < 10) html += "0"; // Führende Null für einstellige Kanäle
+    html += String(i);
+    html += "</option>";
+  }
+  html += R"=====(</select>
+          <label for="cbchannel">CB-Funk Kanal</label>
+          <span class="helper-text">CB Funk Kanal 1-40</span>
+        </div>
+        <div class="input-field custom-row">
+          <select id="displaybrightness" name="displaybrightness">
+            <option value="0")=====";
+  if(displayBrightness == 0) html += " selected";
+  html += R"=====(>1% (Minimal)</option>
+            <option value="51")=====";
+  if(displayBrightness >= 46 && displayBrightness <= 55) html += " selected";
+  html += R"=====(>20% (Sehr dunkel)</option>
+            <option value="102")=====";
+  if(displayBrightness >= 97 && displayBrightness <= 107) html += " selected";
+  html += R"=====(>40% (Dunkel)</option>
+            <option value="153")=====";
+  if(displayBrightness >= 148 && displayBrightness <= 158) html += " selected";
+  html += R"=====(>60% (Normal)</option>
+            <option value="204")=====";
+  if(displayBrightness >= 199 && displayBrightness <= 209) html += " selected";
+  html += R"=====(>80% (Hell)</option>
+            <option value="255")=====";
+  if(displayBrightness >= 250) html += " selected";
+  html += R"=====(>100% (Maximum)</option>
+          </select>
+          <label for="displaybrightness">Display-Helligkeit</label>
+          <span class="helper-text">Live-Vorschau beim Ändern der Auswahl</span>
         </div>
 )=====";
   html += "<div class=\"input-field custom-row\">";
@@ -1094,6 +1353,16 @@ void handleRoot() {
         </div>
       </div>
       
+      <!-- MQTT Status Section -->
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">cloud_queue</i>MQTT Status</span>
+          <div id="mqttStatusContent">
+            <p><i class="material-icons tiny">refresh</i> Lade MQTT-Informationen...</p>
+          </div>
+        </div>
+      </div>
+      
       <!-- Firmware Update Section -->
       <div class="card">
         <div class="card-content">
@@ -1207,6 +1476,36 @@ void handleRoot() {
             document.getElementById('displayType').textContent = data.system.displayType || '-';
             document.getElementById('sslValidation').textContent = data.system.sslValidation || '-';
             
+            // MQTT Status anzeigen
+            if (data.mqtt) {
+              const mqttStatus = data.mqtt;
+              const connectionStatus = mqttStatus.connected ? 'Connected' : 'Disconnected';
+              const statusClass = mqttStatus.connected ? 'green-text' : 'red-text';
+              const statusIcon = mqttStatus.connected ? 'cloud_done' : 'cloud_off';
+              
+              let mqttHtml = '<div class="row">';
+              mqttHtml += '<div class="col s6">';
+              mqttHtml += '<p><strong>Status:</strong> <span class="' + statusClass + '"><i class="material-icons tiny">' + statusIcon + '</i> ' + connectionStatus + '</span></p>';
+              mqttHtml += '<p><strong>Broker:</strong> ' + (mqttStatus.broker || 'Nicht konfiguriert') + '</p>';
+              mqttHtml += '<p><strong>Port:</strong> ' + mqttStatus.port + '</p>';
+              mqttHtml += '<p><strong>Username:</strong> ' + (mqttStatus.username || 'Nicht gesetzt') + '</p>';
+              mqttHtml += '</div>';
+              mqttHtml += '<div class="col s6">';
+              mqttHtml += '<p><strong>CB-Kanal:</strong> ' + String(mqttStatus.cbChannel).padStart(2, '0') + '</p>';
+              mqttHtml += '<p><strong>MQTT Topic:</strong> <span style="font-family: monospace; font-size: 14px;">' + mqttStatus.topic + '</span></p>';
+              mqttHtml += '<p><strong>Verbindung:</strong> ' + mqttStatus.state + '</p>';
+              mqttHtml += '</div>';
+              mqttHtml += '</div>';
+              
+              if (mqttStatus.lastReconnectAttempt) {
+                mqttHtml += '<p><small><strong>Letzter Reconnect:</strong> ' + mqttStatus.lastReconnectAttempt + '</small></p>';
+              }
+              
+              document.getElementById('mqttStatusContent').innerHTML = mqttHtml;
+            } else {
+              document.getElementById('mqttStatusContent').innerHTML = '<p class="red-text">MQTT-Daten nicht verfügbar</p>';
+            }
+            
             // Crash Logs anzeigen
             const crashLogsContainer = document.getElementById('crashLogsContainer');
             
@@ -1287,6 +1586,40 @@ void handleRoot() {
           updateMonitor();
           updateHardwareInfo();
         };
+        
+        // Display-Helligkeit Live-Vorschau (Dropdown)
+        function setupBrightnessDropdown() {
+          const dropdown = document.getElementById('displaybrightness');
+          
+          if(dropdown) {
+            dropdown.addEventListener('change', function() {
+              const brightness = this.value;
+              
+              // Live-API-Call für sofortige Vorschau
+              fetch('/api/display_brightness', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: 'brightness=' + brightness
+              })
+              .then(response => response.json())
+              .then(data => {
+                if(data.status === 'success') {
+                  M.toast({html: 'Helligkeit geändert: ' + brightness + '/255', classes: 'green'});
+                } else {
+                  console.error('Brightness update failed:', data.message);
+                  M.toast({html: 'Fehler beim Ändern der Helligkeit', classes: 'red'});
+                }
+              })
+              .catch(error => {
+                console.error('Brightness API error:', error);
+                M.toast({html: 'Verbindungsfehler', classes: 'red'});
+              });
+            });
+          }
+        }
+        
+        // Brightness-Dropdown beim Laden initialisieren
+        document.addEventListener('DOMContentLoaded', setupBrightnessDropdown);
       </script>
       <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -1388,6 +1721,20 @@ void handleSave() {
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
   if (server.hasArg("sslvalidation")) sslValidation = (server.arg("sslvalidation").toInt() == 1);
   if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
+  if (server.hasArg("displaybrightness")) {
+    int brightness = server.arg("displaybrightness").toInt();
+    if(brightness >= 0 && brightness <= 255) {
+      displayBrightness = brightness;
+      appendMonitor("Display-Helligkeit gespeichert: " + String(brightness), "INFO");
+    }
+  }
+  if (server.hasArg("cbchannel")) {
+    uint8_t newChannel = server.arg("cbchannel").toInt();
+    if(newChannel >= 1 && newChannel <= 40) {
+      cbChannel = newChannel;
+      appendMonitor("CB-Kanal geändert auf " + String(cbChannel), "INFO");
+    }
+  }
   
   // MQTT Konfiguration verarbeiten (MQTT ist immer aktiviert)
   mqttEnabled = true; // MQTT ist die einzige Kommunikationsart
@@ -1517,6 +1864,41 @@ void handleHardwareInfo() {
   
   // SSL Validation
   json += "\"sslValidation\":\"" + String(sslValidation ? "Enabled" : "Disabled") + "\"";
+  json += "},";
+  
+  // MQTT Information
+  json += "\"mqtt\":{";
+  json += "\"enabled\":" + String(mqttEnabled ? "true" : "false") + ",";
+  json += "\"broker\":\"" + String(mqttBroker) + "\",";
+  json += "\"port\":" + String(mqttPort) + ",";
+  json += "\"username\":\"" + String(mqttUsername) + "\",";
+  json += "\"connected\":" + String(isMqttConnected() ? "true" : "false") + ",";
+  json += "\"cbChannel\":" + String(cbChannel) + ",";
+  json += "\"topic\":\"" + mqttBroadcastTopic + "\",";
+  
+  // MQTT Client State
+  String mqttState = "Unknown";
+  if (mqttClient.connected()) {
+    mqttState = "Connected";
+  } else {
+    int error = mqttClient.connectError();
+    switch(error) {
+      case MQTT_CONNECTION_REFUSED: mqttState = "Connection Refused"; break;
+      case MQTT_CONNECTION_TIMEOUT: mqttState = "Connection Timeout"; break;
+      case MQTT_SUCCESS: mqttState = "Disconnected"; break;
+      case MQTT_UNACCEPTABLE_PROTOCOL_VERSION: mqttState = "Protocol Error"; break;
+      case MQTT_IDENTIFIER_REJECTED: mqttState = "ID Rejected"; break;
+      case MQTT_SERVER_UNAVAILABLE: mqttState = "Server Unavailable"; break;
+      case MQTT_BAD_USER_NAME_OR_PASSWORD: mqttState = "Auth Failed"; break;
+      case MQTT_NOT_AUTHORIZED: mqttState = "Not Authorized"; break;
+      default: mqttState = "Error " + String(error); break;
+    }
+  }
+  json += "\"state\":\"" + mqttState + "\",";
+  
+  // MQTT Stats (Last connect attempt, etc.)
+  unsigned long timeSinceLastReconnect = millis() - lastMqttReconnect;
+  json += "\"lastReconnectAttempt\":\"" + String(timeSinceLastReconnect / 1000) + "s ago\"";
   json += "},";
   
   // Crash Logs
@@ -1688,6 +2070,52 @@ void handleClearCrashLogs() {
   
   // Bestätigung senden
   server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Crash logs cleared successfully\"}");
+}
+
+// Handler für Live Display-Helligkeit ändern
+void handleDisplayBrightness() {
+  // CORS Header für Browser-Kompatibilität
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "POST");
+  server.sendHeader("Access-Control-Allow-Headers", "Content-Type");
+  
+  if(server.hasArg("brightness")) {
+    int brightness = server.arg("brightness").toInt();
+    
+    // Validierung: 0-255 Bereich
+    if(brightness >= 0 && brightness <= 255) {
+      displayBrightness = brightness;
+      setDisplayBrightness(displayBrightness); // Live-Anwendung am Display
+      
+      appendMonitor("Display-Helligkeit geändert: " + String(brightness), "INFO");
+      server.send(200, "application/json", "{\"status\":\"success\",\"brightness\":" + String(brightness) + "}");
+    } else {
+      server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Invalid brightness value (0-255)\"}");
+    }
+  } else {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Missing brightness parameter\"}");
+  }
+}
+
+// Display-Helligkeit setzen (Live-Anwendung)
+void setDisplayBrightness(uint8_t brightness) {
+  // Bei OLED-Displays Kontrast verwenden (funktioniert wie Helligkeit)
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.ssd1306_command(SSD1306_SETCONTRAST);
+    display_ssd1306.ssd1306_command(brightness);
+  } else {
+    // SH1106G: Leider keine direkte Kontrast-API verfügbar in Adafruit_SH1106G
+    // Als Workaround verwenden wir die interne Wire-Kommunikation
+    Wire.beginTransmission(0x3C); // Standard I2C-Adresse für SH1106
+    Wire.write(0x80); // Command mode
+    Wire.write(0x81); // Set contrast command (SSD1306_SETCONTRAST)
+    Wire.endTransmission();
+    
+    Wire.beginTransmission(0x3C);
+    Wire.write(0x80); // Command mode  
+    Wire.write(brightness); // Brightness value
+    Wire.endTransmission();
+  }
 }
 
 // WiFi-Status in lesbaren Text umwandeln
@@ -1912,6 +2340,7 @@ void startWebserver() {
   server.on("/api/hardware_info", handleHardwareInfo);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/clearcrashlogs", HTTP_POST, handleClearCrashLogs);
+  server.on("/api/display_brightness", HTTP_POST, handleDisplayBrightness); // Live Display-Helligkeit
   server.on("/ota-check", handleOTACheck);
   server.on("/ota-update", HTTP_POST, handleOTAUpdate);
   server.begin();
