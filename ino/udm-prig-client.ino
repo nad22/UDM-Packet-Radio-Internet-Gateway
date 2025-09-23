@@ -43,16 +43,13 @@
 #define MQTT_PORT_OFFSET 414           // 2 bytes: MQTT Port (uint16_t)
 #define MQTT_USERNAME_OFFSET 416       // 16 bytes: MQTT Username
 #define MQTT_PASSWORD_OFFSET 432       // 32 bytes: MQTT Password
-#define CB_CHANNEL_OFFSET 464          // 1 byte: CB-Kanal 1-40
-#define MQTT_BROKER_OFFSET 349         // 64 bytes für Broker URL (erweitert für HiveMQ Cloud)
-#define MQTT_PORT_OFFSET 413           // 2 bytes für Port (8883)
-#define MQTT_USERNAME_OFFSET 415       // 16 bytes für Username (erweitert)
-#define MQTT_PASSWORD_OFFSET 431       // 32 bytes für Password (erweitert auf 30 Zeichen)
+#define MQTT_SHARED_SECRET_OFFSET 464  // 32 bytes: Shared Secret für Verschlüsselung
+#define CB_CHANNEL_OFFSET 496          // 1 byte: CB-Kanal 1-40
 
-// Crash Log System (EEPROM 466-1023)
-#define CRASH_LOG_START_OFFSET 466
-#define CRASH_LOG_COUNT_OFFSET 466  // 4 bytes für Anzahl der Logs
-#define CRASH_LOG_ENTRIES_OFFSET 470  // Crash Log Einträge (5 x 120 = 600 bytes)
+// Crash Log System (EEPROM 500-1023)
+#define CRASH_LOG_START_OFFSET 500
+#define CRASH_LOG_COUNT_OFFSET 500  // 4 bytes für Anzahl der Logs
+#define CRASH_LOG_ENTRIES_OFFSET 504  // Crash Log Einträge (5 x 120 = 600 bytes)
 #define CRASH_LOG_ENTRY_SIZE 120  // Timestamp (20) + Message (100)
 #define MAX_CRASH_LOGS 5
 
@@ -104,6 +101,7 @@ char mqttBroker[64] = ""; // HiveMQ Cloud Broker URL (erweitert für längere UR
 uint16_t mqttPort = 8883; // Default: SSL Port
 char mqttUsername[16] = ""; // MQTT Username (erweitert)
 char mqttPassword[32] = ""; // MQTT Password (erweitert auf 30+1 Zeichen)
+char mqttSharedSecret[32] = ""; // Shared Secret für Payload-Verschlüsselung (31+1 Zeichen)
 uint8_t cbChannel = 1; // CB-Funk Kanal 1-40 (Default: Kanal 1)
 
 // MQTT Client Objects
@@ -180,6 +178,10 @@ void handleReboot(); // Forward-Deklaration für System Reboot
 void saveCrashLog(const String& message); // Forward-Deklaration für Crash Log
 void loadCrashLogs(); // Forward-Deklaration für Crash Log laden
 void saveCrashLogsToEEPROM(); // Forward-Deklaration für Crash Log speichern
+
+// MQTT Payload Verschlüsselung/Entschlüsselung
+String encryptPayload(const String& payload);
+String decryptPayload(const String& encryptedPayload);
 
 // MQTT Forward-Deklarationen
 void onMqttMessage(int messageSize);
@@ -655,7 +657,7 @@ void updateOLED() {
     display_ssd1306.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
     display_ssd1306.setCursor((SCREEN_WIDTH - w) / 2, 22);
     display_ssd1306.print(mqttStatus);
-    display_ssd1306.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
+    display_ssd1306.drawLine(0, 31, SCREEN_WIDTH, 31, getDisplayWhite());
     drawCBChannelDisplay(); // Neues CB-Kanal Display statt drawRXTXRects()
     display_ssd1306.display();
   } else {
@@ -714,6 +716,7 @@ void saveConfig() {
   EEPROM.write(MQTT_PORT_OFFSET+1, mqttPort & 0xFF);
   for (int i = 0; i < 16; ++i) EEPROM.write(MQTT_USERNAME_OFFSET+i, mqttUsername[i]);
   for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_PASSWORD_OFFSET+i, mqttPassword[i]);
+  for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_SHARED_SECRET_OFFSET+i, mqttSharedSecret[i]);
   EEPROM.write(CB_CHANNEL_OFFSET, cbChannel); // CB-Kanal speichern
   
   EEPROM.commit();
@@ -752,6 +755,8 @@ void loadConfig() {
   mqttUsername[15] = 0;
   for (int i = 0; i < 32; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
   mqttPassword[31] = 0;
+  for (int i = 0; i < 32; ++i) mqttSharedSecret[i] = EEPROM.read(MQTT_SHARED_SECRET_OFFSET+i);
+  mqttSharedSecret[31] = 0;
   cbChannel = EEPROM.read(CB_CHANNEL_OFFSET); // CB-Kanal laden
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
@@ -829,9 +834,10 @@ void onMqttMessage(int messageSize) {
   
   appendMonitor("MQTT RX: " + topic + " - " + String(messageSize) + " bytes", "INFO");
   
+  // Payload entschlüsseln wenn Shared Secret gesetzt
   // Alle Nachrichten aus dem Broadcast-Channel verarbeiten
   if(topic == mqttBroadcastTopic) {
-    // JSON-Message mit Hex-Payload verarbeiten
+    // JSON-Message mit Hex-Payload verarbeiten (Entschlüsselung erfolgt in processMqttMessage)
     processMqttMessage(message);
   }
   else if(topic.endsWith("/config")) {
@@ -893,6 +899,7 @@ bool publishMqttMessage(const String& topic, const String& message) {
   }
   
   // Nachricht senden (QoS 0 = Fire-and-Forget, keine Speicherung)
+  // Verschlüsselung wird von der aufrufenden Funktion gehandhabt
   mqttClient.beginMessage(topic);
   mqttClient.print(message);
   bool success = (mqttClient.endMessage() == 1);
@@ -1125,6 +1132,13 @@ void handleRoot() {
   html += String(mqttPassword);
   html += R"=====(">
               <label for="mqttpass" class="active">MQTT Password</label>
+            </div>
+            <div class="input-field custom-row">
+              <input type="password" id="mqttsharedsecret" name="mqttsharedsecret" maxlength="31" value=")=====";
+  html += String(mqttSharedSecret);
+  html += R"=====(">
+              <label for="mqttsharedsecret" class="active">MQTT Shared Secret</label>
+              <span class="helper-text">Für Payload-Verschlüsselung (leer = keine Verschlüsselung)</span>
             </div>
           </div>
         </div>
@@ -1759,6 +1773,7 @@ void handleSave() {
   if (server.hasArg("mqttport")) mqttPort = server.arg("mqttport").toInt();
   if (server.hasArg("mqttuser")) strncpy(mqttUsername, server.arg("mqttuser").c_str(), 15);
   if (server.hasArg("mqttpass")) strncpy(mqttPassword, server.arg("mqttpass").c_str(), 30);
+  if (server.hasArg("mqttsharedsecret")) strncpy(mqttSharedSecret, server.arg("mqttsharedsecret").c_str(), 31);
   if (server.hasArg("displaybrightness")) {
     int brightness = server.arg("displaybrightness").toInt();
     if(brightness >= 0 && brightness <= 255) {
@@ -1782,7 +1797,7 @@ void handleSave() {
   if (server.hasArg("mqttpass")) strncpy(mqttPassword, server.arg("mqttpass").c_str(), 31);
   
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
-  mqttBroker[63]=0; mqttUsername[15]=0; mqttPassword[31]=0;
+  mqttBroker[63]=0; mqttUsername[15]=0; mqttPassword[31]=0; mqttSharedSecret[31]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
   server.sendHeader("Location", "/", true);
@@ -1910,6 +1925,7 @@ void handleHardwareInfo() {
   json += "\"broker\":\"" + String(mqttBroker) + "\",";
   json += "\"port\":" + String(mqttPort) + ",";
   json += "\"username\":\"" + String(mqttUsername) + "\",";
+  json += "\"encryption\":\"" + String(strlen(mqttSharedSecret) > 0 ? "Enabled" : "Disabled") + "\",";
   json += "\"connected\":" + String(isMqttConnected() ? "true" : "false") + ",";
   json += "\"cbChannel\":" + String(cbChannel) + ",";
   json += "\"topic\":\"" + mqttBroadcastTopic + "\",";
@@ -2899,11 +2915,18 @@ void processCompleteKissMessage(const String& kissData) {
       hexPayload += hex;
     }
     
+    // Payload verschlüsseln wenn Shared Secret gesetzt
+    String finalPayload = hexPayload;
+    if (strlen(mqttSharedSecret) > 0) {
+      finalPayload = encryptPayload(hexPayload);
+      appendMonitor("Payload verschlüsselt: " + String(finalPayload.length()) + " Zeichen", "DEBUG");
+    }
+    
     String mqttMessage = "{";
     mqttMessage += "\"timestamp\":" + String(millis()) + ",";
     mqttMessage += "\"callsign\":\"" + String(callsign) + "\",";
     mqttMessage += "\"type\":\"data\",";
-    mqttMessage += "\"payload_hex\":\"" + hexPayload + "\",";
+    mqttMessage += "\"payload_hex\":\"" + finalPayload + "\",";
     mqttMessage += "\"payload_length\":" + String(kissData.length()) + ",";
     mqttMessage += "\"rssi\":" + String(WiFi.RSSI()) + ",";
     mqttMessage += "\"gateway\":\"ESP32-" + String(callsign) + "\"";
@@ -2956,6 +2979,12 @@ void processMqttMessage(const String& message) {
     int payloadEnd = message.indexOf("\"", payloadStart);
     if(payloadEnd != -1) {
       String hexPayload = message.substring(payloadStart, payloadEnd);
+      
+      // Payload entschlüsseln falls Shared Secret konfiguriert ist
+      if (strlen(mqttSharedSecret) > 0) {
+        hexPayload = decryptPayload(hexPayload);
+        appendMonitor("MQTT RX Payload entschlüsselt: " + String(hexPayload.length()) + " Zeichen", "DEBUG");
+      }
       
       // Validierung: Hex-String muss gerade Anzahl Zeichen haben
       if(hexPayload.length() % 2 != 0) {
@@ -3103,4 +3132,64 @@ void blinkLED() {
     digitalWrite(LED_PIN, ledState ? HIGH : LOW);
     lastBlink = now;
   }
+}
+
+// MQTT Payload Verschlüsselung mit XOR und Base64
+String encryptPayload(const String& hexPayload) {
+  if (strlen(mqttSharedSecret) == 0) {
+    return hexPayload; // Keine Verschlüsselung wenn kein Secret gesetzt
+  }
+  
+  if (hexPayload.length() % 2 != 0) {
+    return hexPayload; // Ungültige Hex-Länge, return original
+  }
+  
+  String encrypted = "";
+  int secretLen = strlen(mqttSharedSecret);
+  int charIndex = 0;
+  
+  // Hex-String zu Bytes konvertieren, XOR anwenden, zurück zu Hex
+  for (int i = 0; i < hexPayload.length(); i += 2) {
+    String hexByte = hexPayload.substring(i, i + 2);
+    char originalChar = (char)strtol(hexByte.c_str(), NULL, 16);
+    char encryptedChar = originalChar ^ mqttSharedSecret[charIndex % secretLen];
+    
+    // Zurück zu Hex mit führender Null falls nötig
+    char hexStr[3];
+    sprintf(hexStr, "%02X", (unsigned char)encryptedChar);
+    encrypted += String(hexStr);
+    charIndex++;
+  }
+  
+  return encrypted;
+}
+
+// MQTT Payload Entschlüsselung 
+String decryptPayload(const String& encryptedHexPayload) {
+  if (strlen(mqttSharedSecret) == 0) {
+    return encryptedHexPayload; // Keine Entschlüsselung wenn kein Secret gesetzt
+  }
+  
+  if (encryptedHexPayload.length() % 2 != 0) {
+    return encryptedHexPayload; // Ungültige Hex-Länge, return original
+  }
+  
+  String decrypted = "";
+  int secretLen = strlen(mqttSharedSecret);
+  int charIndex = 0;
+  
+  // Hex-String zu Bytes konvertieren, XOR anwenden, zurück zu Hex
+  for (int i = 0; i < encryptedHexPayload.length(); i += 2) {
+    String hexByte = encryptedHexPayload.substring(i, i + 2);
+    char encryptedChar = (char)strtol(hexByte.c_str(), NULL, 16);
+    char decryptedChar = encryptedChar ^ mqttSharedSecret[charIndex % secretLen];
+    
+    // Zurück zu Hex mit führender Null falls nötig
+    char hexStr[3];
+    sprintf(hexStr, "%02X", (unsigned char)decryptedChar);
+    decrypted += String(hexStr);
+    charIndex++;
+  }
+  
+  return decrypted;
 }
