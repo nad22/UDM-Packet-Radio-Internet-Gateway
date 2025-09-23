@@ -29,6 +29,13 @@
 #define SSL_VALIDATION_OFFSET 346  // Offset für SSL-Zertifikat-Validierung
 #define CPU_FREQUENCY_OFFSET 347   // Offset für CPU-Frequenz (1 byte: 0=240MHz, 1=160MHz, 2=80MHz)
 
+// MQTT Configuration (EEPROM 348-399)
+#define MQTT_ENABLED_OFFSET 348        // 1 byte: 0=HTTP, 1=MQTT
+#define MQTT_BROKER_OFFSET 349         // 32 bytes für Broker URL
+#define MQTT_PORT_OFFSET 381           // 2 bytes für Port (8883)
+#define MQTT_USERNAME_OFFSET 383       // 8 bytes für Username
+#define MQTT_PASSWORD_OFFSET 391       // 8 bytes für Password
+
 // Crash Log System (EEPROM 400-1023)
 #define CRASH_LOG_START_OFFSET 400
 #define CRASH_LOG_COUNT_OFFSET 400  // 4 bytes für Anzahl der Logs
@@ -76,6 +83,13 @@ uint8_t logLevel = 1;
 uint8_t displayType = DISPLAY_SSD1306; // Default: SSD1306 (kleineres Display)
 bool sslValidation = true; // Default: SSL-Validierung aktiviert für sichere Verbindungen
 uint8_t cpuFrequency = 0; // Default: 240 MHz (0=240MHz, 1=160MHz, 2=80MHz, 3=40MHz, 4=26MHz)
+
+// MQTT Configuration
+bool mqttEnabled = false; // Default: HTTP mode, MQTT optional
+char mqttBroker[32] = ""; // HiveMQ Cloud Broker URL
+uint16_t mqttPort = 8883; // Default: SSL Port
+char mqttUsername[8] = ""; // MQTT Username (kurz für EEPROM)
+char mqttPassword[8] = ""; // MQTT Password (kurz für EEPROM)
 bool apActive = false;
 bool authenticationError = false;
 bool sslCertificateError = false; // Neuer Flag für SSL-Zertifikatsfehler
@@ -491,6 +505,15 @@ void saveConfig() {
   EEPROM.write(DISPLAYTYPE_OFFSET, displayType);  // Display-Typ speichern
   EEPROM.write(SSL_VALIDATION_OFFSET, sslValidation ? 1 : 0);  // SSL-Validierung speichern
   EEPROM.write(CPU_FREQUENCY_OFFSET, cpuFrequency);  // CPU-Frequenz speichern
+  
+  // MQTT Configuration speichern
+  EEPROM.write(MQTT_ENABLED_OFFSET, mqttEnabled ? 1 : 0);
+  for (int i = 0; i < 32; ++i) EEPROM.write(MQTT_BROKER_OFFSET+i, mqttBroker[i]);
+  EEPROM.write(MQTT_PORT_OFFSET, (mqttPort >> 8) & 0xFF);
+  EEPROM.write(MQTT_PORT_OFFSET+1, mqttPort & 0xFF);
+  for (int i = 0; i < 8; ++i) EEPROM.write(MQTT_USERNAME_OFFSET+i, mqttUsername[i]);
+  for (int i = 0; i < 8; ++i) EEPROM.write(MQTT_PASSWORD_OFFSET+i, mqttPassword[i]);
+  
   EEPROM.commit();
 }
 
@@ -516,6 +539,17 @@ void loadConfig() {
   displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Display-Typ laden
   sslValidation = EEPROM.read(SSL_VALIDATION_OFFSET) == 1;  // SSL-Validierung laden
   cpuFrequency = EEPROM.read(CPU_FREQUENCY_OFFSET);  // CPU-Frequenz laden
+  
+  // MQTT Configuration laden
+  mqttEnabled = EEPROM.read(MQTT_ENABLED_OFFSET) == 1;
+  for (int i = 0; i < 32; ++i) mqttBroker[i] = EEPROM.read(MQTT_BROKER_OFFSET+i);
+  mqttBroker[31] = 0;
+  mqttPort = ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET) << 8) | ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET+1));
+  for (int i = 0; i < 8; ++i) mqttUsername[i] = EEPROM.read(MQTT_USERNAME_OFFSET+i);
+  mqttUsername[7] = 0;
+  for (int i = 0; i < 8; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
+  mqttPassword[7] = 0;
+  
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
     appendMonitor("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
@@ -532,6 +566,16 @@ void loadConfig() {
     strcpy(localVersion, "1.0.1");
     appendMonitor("Version war leer, Standard gesetzt: " + String(localVersion), "WARNING");
     saveConfig(); // Speichere Standard-Version
+  }
+  
+  // MQTT Konfiguration validieren
+  if(mqttPort == 0 || mqttPort == 0xFFFF) {
+    mqttPort = 8883; // Default SSL Port
+    appendMonitor("MQTT Port ungültig, auf 8883 gesetzt", "WARNING");
+  }
+  if(mqttEnabled && strlen(mqttBroker) == 0) {
+    appendMonitor("MQTT aktiviert aber Broker-URL leer!", "WARNING");
+    mqttEnabled = false; // Deaktiviere MQTT wenn Broker fehlt
   }
   
   // Validiere CPU-Frequenz-Wert und korrigiere problematische Einstellungen
@@ -1155,7 +1199,16 @@ void handleSave() {
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
   if (server.hasArg("sslvalidation")) sslValidation = (server.arg("sslvalidation").toInt() == 1);
   if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
+  
+  // MQTT Konfiguration verarbeiten
+  if (server.hasArg("mqttenabled")) mqttEnabled = (server.arg("mqttenabled").toInt() == 1);
+  if (server.hasArg("mqttbroker")) strncpy(mqttBroker, server.arg("mqttbroker").c_str(), 31);
+  if (server.hasArg("mqttport")) mqttPort = server.arg("mqttport").toInt();
+  if (server.hasArg("mqttuser")) strncpy(mqttUsername, server.arg("mqttuser").c_str(), 7);
+  if (server.hasArg("mqttpass")) strncpy(mqttPassword, server.arg("mqttpass").c_str(), 7);
+  
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
+  mqttBroker[31]=0; mqttUsername[7]=0; mqttPassword[7]=0;
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
   server.sendHeader("Location", "/", true);
