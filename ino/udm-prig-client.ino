@@ -2369,6 +2369,11 @@ void loop() {
     lastOled = millis();
   }
 
+  // **MQTT Loop für Empfang (KRITISCH für MQTT-Nachrichten!)**
+  if (mqttEnabled) {
+    handleMqttLoop();
+  }
+
   // RS232 KISS-Protokoll Verarbeitung (saubere Nachrichtentrennung)
   if (RS232.available()) {
     while (RS232.available()) {
@@ -2378,17 +2383,19 @@ void loop() {
       if (c == 0xC0 && !inKissFrame) {
         inKissFrame = true;
         kissBuffer = "";
+        kissBuffer += c; // FEND Start-Byte mit einschließen!
         expectedKissLength = 0;
-        currentKissLength = 0;
+        currentKissLength = 1; // Start mit 1 wegen FEND
         continue;
       }
       
       // KISS Frame End Detection  
       if (c == 0xC0 && inKissFrame) {
         inKissFrame = false;
+        kissBuffer += c; // FEND End-Byte mit einschließen!
         
-        // Vollständige KISS-Nachricht verarbeiten
-        if(kissBuffer.length() > 0) {
+        // Vollständige KISS-Nachricht mit FEND-Bytes verarbeiten
+        if(kissBuffer.length() > 2) { // Mindestens C0 XX C0
           processCompleteKissMessage(kissBuffer);
         }
         
@@ -2459,6 +2466,22 @@ String hexToBytes(const String& hexString) {
 
 // MQTT-Nachricht verarbeiten und an RS232 weiterleiten  
 void processMqttMessage(const String& message) {
+  // Eigene Nachrichten filtern (Echo-Schutz)
+  int callsignStart = message.indexOf("\"callsign\":\"");
+  if(callsignStart != -1) {
+    callsignStart += 12; // Length of "callsign":""
+    int callsignEnd = message.indexOf("\"", callsignStart);
+    if(callsignEnd != -1) {
+      String senderCallsign = message.substring(callsignStart, callsignEnd);
+      
+      // Wenn es unsere eigene Nachricht ist, ignorieren
+      if(senderCallsign == String(callsign)) {
+        appendMonitor("MQTT Echo ignoriert (eigene Nachricht)", "DEBUG");
+        return;
+      }
+    }
+  }
+  
   // JSON-Parser für eingehende MQTT-Nachrichten
   int payloadStart = message.indexOf("\"payload_hex\":\"");
   if(payloadStart != -1) {
@@ -2467,13 +2490,45 @@ void processMqttMessage(const String& message) {
     if(payloadEnd != -1) {
       String hexPayload = message.substring(payloadStart, payloadEnd);
       
-      // Hex zu Binärdaten konvertieren und an RS232 senden
-      String binaryData = hexToBytes(hexPayload);
-      RS232.print(binaryData);
+      // Validierung: Hex-String muss gerade Anzahl Zeichen haben
+      if(hexPayload.length() % 2 != 0) {
+        appendMonitor("MQTT RX Error: Ungültiger Hex-String (ungerade Länge)", "ERROR");
+        return;
+      }
       
-      appendMonitor("MQTT Funk RX: " + String(binaryData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
+      // Hex zu Binärdaten konvertieren 
+      String binaryData = hexToBytes(hexPayload);
+      
+      // Debug: Zeige was an RS232 gesendet wird
+      String debugHex = "";
+      for(int i = 0; i < binaryData.length(); i++) {
+        char hex[3];
+        sprintf(hex, "%02X", (unsigned char)binaryData[i]);
+        debugHex += hex;
+        if(i < binaryData.length()-1) debugHex += " ";
+      }
+      appendMonitor("DEBUG: Sende 1:1 an RS232: " + debugHex, "DEBUG");
+      
+      // Hex-Daten 1:1 an RS232 senden (bereits vollständige KISS-Frames)
+      RS232.print(binaryData);
+      RS232.flush(); // Stelle sicher, dass Daten sofort gesendet werden
+      
+      // Sender-Info für Monitor extrahieren
+      String senderInfo = "";
+      int senderStart = message.indexOf("\"callsign\":\"");
+      if(senderStart != -1) {
+        senderStart += 12;
+        int senderEnd = message.indexOf("\"", senderStart);
+        if(senderEnd != -1) {
+          senderInfo = " von " + message.substring(senderStart, senderEnd);
+        }
+      }
+      
+      appendMonitor("MQTT→RS232: " + String(binaryData.length()) + " bytes" + senderInfo + " (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
       lastRX = millis();
     }
+  } else {
+    appendMonitor("MQTT RX: Keine payload_hex gefunden", "WARNING");
   }
 }
 
