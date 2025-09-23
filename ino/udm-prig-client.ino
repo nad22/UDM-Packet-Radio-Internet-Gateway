@@ -404,6 +404,7 @@ void drawRXTXRects() {
   int rect_width = 26;
   int rect_height = 16;
   int rect_y = 48;
+  int rx_y = 45;  // RX Box 3px höher als TX Box
   int rx_x = 16;
   int tx_x = 80;
   
@@ -413,16 +414,16 @@ void drawRXTXRects() {
   if (displayType == DISPLAY_SSD1306) {
     display_ssd1306.setTextSize(1);
     display_ssd1306.setTextColor(white);
-    display_ssd1306.setCursor(rx_x+6, rect_y-10);
+    display_ssd1306.setCursor(rx_x+6, rx_y-10);
     display_ssd1306.print("RX");
     display_ssd1306.setCursor(tx_x+6, rect_y-10);
     display_ssd1306.print("TX");
 
     if (millis() - lastRX < RS232_ACTIVE_TIME) {
-      display_ssd1306.fillRect(rx_x, rect_y, rect_width, rect_height, white);
-      display_ssd1306.drawRect(rx_x, rect_y, rect_width, rect_height, black);
+      display_ssd1306.fillRect(rx_x, rx_y, rect_width, rect_height, white);
+      display_ssd1306.drawRect(rx_x, rx_y, rect_width, rect_height, black);
     } else {
-      display_ssd1306.drawRect(rx_x, rect_y, rect_width, rect_height, white);
+      display_ssd1306.drawRect(rx_x, rx_y, rect_width, rect_height, white);
     }
     if (millis() - lastTX < RS232_ACTIVE_TIME) {
       display_ssd1306.fillRect(tx_x, rect_y, rect_width, rect_height, white);
@@ -433,16 +434,16 @@ void drawRXTXRects() {
   } else {
     display_sh1106.setTextSize(1);
     display_sh1106.setTextColor(white);
-    display_sh1106.setCursor(rx_x+6, rect_y-10);
+    display_sh1106.setCursor(rx_x+6, rx_y-10);
     display_sh1106.print("RX");
     display_sh1106.setCursor(tx_x+6, rect_y-10);
     display_sh1106.print("TX");
 
     if (millis() - lastRX < RS232_ACTIVE_TIME) {
-      display_sh1106.fillRect(rx_x, rect_y, rect_width, rect_height, white);
-      display_sh1106.drawRect(rx_x, rect_y, rect_width, rect_height, black);
+      display_sh1106.fillRect(rx_x, rx_y, rect_width, rect_height, white);
+      display_sh1106.drawRect(rx_x, rx_y, rect_width, rect_height, black);
     } else {
-      display_sh1106.drawRect(rx_x, rect_y, rect_width, rect_height, white);
+      display_sh1106.drawRect(rx_x, rx_y, rect_width, rect_height, white);
     }
     if (millis() - lastTX < RS232_ACTIVE_TIME) {
       display_sh1106.fillRect(tx_x, rect_y, rect_width, rect_height, white);
@@ -760,7 +761,6 @@ void loadConfig() {
   if(logLevel > 3) logLevel = 1;
   if(displayType > 1) displayType = DISPLAY_SSD1306;  // Default zu SSD1306 bei ungültigem Wert
   if(strlen(wifiSsid) == 0) appendMonitor("WLAN SSID ist leer!", "WARNING");
-  if(strlen(serverUrl) == 0) appendMonitor("Server URL ist leer!", "WARNING");
   if(strlen(otaRepoUrl) == 0) {
     strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
     appendMonitor("OTA URL war leer, Standard gesetzt", "WARNING");
@@ -1029,40 +1029,40 @@ void handleRoot() {
       <li class="tab col s4"><a href="#config">Config</a></li>
     </ul>
     <div id="config" class="col s12">
+      <h5>Konfiguration</h5>
       <form id="configform" action='/save' method='post'>
-        <div class="input-field custom-row">
-          <input id="ssid" name="ssid" type="text" maxlength="63" value=")=====";
+        
+        <!-- WiFi Konfiguration -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">wifi</i>WiFi Konfiguration</span>
+            <div class="input-field custom-row">
+              <input id="ssid" name="ssid" type="text" maxlength="63" value=")=====";
   html += String(wifiSsid);
   html += R"=====(">
-          <label for="ssid" class="active">WLAN SSID</label>
-        </div>
-        <div class="input-field custom-row">
-          <input id="pass" name="pass" type="password" maxlength="63" value=")=====";
+              <label for="ssid" class="active">WLAN SSID</label>
+            </div>
+            <div class="input-field custom-row">
+              <input id="pass" name="pass" type="password" maxlength="63" value=")=====";
   html += String(wifiPass);
   html += R"=====(">
-          <label for="pass" class="active">WLAN Passwort</label>
+              <label for="pass" class="active">WLAN Passwort</label>
+            </div>
+          </div>
         </div>
-        <div class="input-field custom-row">
-          <input id="serverurl" name="serverurl" type="text" maxlength="63" value=")=====";
-  html += String(serverUrl);
-  html += R"=====(">
-          <label for="serverurl" class="active">Server URL</label>
-        </div>
-        <div class="input-field custom-row">
-          <input id="callsign" name="callsign" type="text" maxlength="31" value=")=====";
+        
+        <!-- Packet Radio Konfiguration -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">radio</i>Packet Radio Konfiguration</span>
+            <div class="input-field custom-row">
+              <input id="callsign" name="callsign" type="text" maxlength="31" value=")=====";
   html += String(callsign);
   html += R"=====(">
-          <label for="callsign" class="active">Callsign</label>
-        </div>
-        <div class="input-field custom-row">
-          <input id="otarepourl" name="otarepourl" type="url" maxlength="127" value=")=====";
-  html += String(otaRepoUrl);
-  html += R"=====(">
-          <label for="otarepourl" class="active">OTA Repository URL</label>
-          <span class="helper-text">GitHub Raw URL für Firmware-Updates</span>
-        </div>
-        <div class="input-field custom-row">
-          <select id="baudrate" name="baudrate">
+              <label for="callsign" class="active">Callsign</label>
+            </div>
+            <div class="input-field custom-row">
+              <select id="baudrate" name="baudrate">
   )=====";
   uint32_t rates[] = {1200, 2400, 4800, 9600, 14400, 19200, 38400, 57600, 115200};
   for(int i=0;i<9;++i){
@@ -1075,10 +1075,10 @@ void handleRoot() {
     html += " Baud</option>";
   }
   html += R"=====(</select>
-          <label for="baudrate">RS232 Baudrate</label>
-        </div>
-        <div class="input-field custom-row">
-          <select id="cbchannel" name="cbchannel">
+              <label for="baudrate">RS232 Baudrate</label>
+            </div>
+            <div class="input-field custom-row">
+              <select id="cbchannel" name="cbchannel">
   )=====";
   // CB-Kanal 1-40 Dropdown generieren
   for(int i = 1; i <= 40; i++) {
@@ -1092,124 +1092,131 @@ void handleRoot() {
     html += "</option>";
   }
   html += R"=====(</select>
-          <label for="cbchannel">CB-Funk Kanal</label>
-          <span class="helper-text">CB Funk Kanal 1-40</span>
+              <label for="cbchannel">CB-Funk Kanal</label>
+              <span class="helper-text">CB Funk Kanal 1-40 für MQTT Broadcast</span>
+            </div>
+          </div>
         </div>
-        <div class="input-field custom-row">
-          <select id="displaybrightness" name="displaybrightness">
-            <option value="0")=====";
+        
+        <!-- MQTT Konfiguration -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">cloud</i>MQTT Konfiguration</span>
+            <div class="input-field custom-row">
+              <input type="text" id="mqttbroker" name="mqttbroker" value=")=====";
+  html += String(mqttBroker);
+  html += R"=====(maxlength="63">
+              <label for="mqttbroker" class="active">MQTT Broker URL</label>
+            </div>
+            <div class="input-field custom-row">
+              <input type="number" id="mqttport" name="mqttport" value=")=====";
+  html += String(mqttPort);
+  html += R"=====(min="1" max="65535">
+              <label for="mqttport" class="active">MQTT Port</label>
+            </div>
+            <div class="input-field custom-row">
+              <input type="text" id="mqttuser" name="mqttuser" value=")=====";
+  html += String(mqttUsername);
+  html += R"=====(maxlength="15">
+              <label for="mqttuser" class="active">MQTT Username</label>
+            </div>
+            <div class="input-field custom-row">
+              <input type="password" id="mqttpass" name="mqttpass" value=")=====";
+  html += String(mqttPassword);
+  html += R"=====(maxlength="30">
+              <label for="mqttpass" class="active">MQTT Password</label>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Display & System Konfiguration -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">settings</i>Display & System</span>
+            <div class="input-field custom-row">
+              <select id="displaytype" name="displaytype">
+                <option value="1")=====";
+  if(displayType==DISPLAY_SSD1306) html += " selected";
+  html += R"=====(>SSD1306 (kleines Display)</option>
+                <option value="0")=====";
+  if(displayType==DISPLAY_SH1106G) html += " selected";
+  html += R"=====(>SH1106G (großes Display)</option>
+              </select>
+              <label for="displaytype">Display-Typ</label>
+            </div>
+            <div class="input-field custom-row">
+              <select id="displaybrightness" name="displaybrightness">
+                <option value="0")=====";
   if(displayBrightness == 0) html += " selected";
   html += R"=====(>1% (Minimal)</option>
-            <option value="51")=====";
+                <option value="51")=====";
   if(displayBrightness >= 46 && displayBrightness <= 55) html += " selected";
   html += R"=====(>20% (Sehr dunkel)</option>
-            <option value="102")=====";
+                <option value="102")=====";
   if(displayBrightness >= 97 && displayBrightness <= 107) html += " selected";
   html += R"=====(>40% (Dunkel)</option>
-            <option value="153")=====";
+                <option value="153")=====";
   if(displayBrightness >= 148 && displayBrightness <= 158) html += " selected";
   html += R"=====(>60% (Normal)</option>
-            <option value="204")=====";
+                <option value="204")=====";
   if(displayBrightness >= 199 && displayBrightness <= 209) html += " selected";
   html += R"=====(>80% (Hell)</option>
-            <option value="255")=====";
+                <option value="255")=====";
   if(displayBrightness >= 250) html += " selected";
   html += R"=====(>100% (Maximum)</option>
-          </select>
-          <label for="displaybrightness">Display-Helligkeit</label>
-          <span class="helper-text">Live-Vorschau beim Ändern der Auswahl</span>
-        </div>
-)=====";
-  html += "<div class=\"input-field custom-row\">";
-  html += "<select id=\"loglevel\" name=\"loglevel\">";
-  html += "<option value=\"0\"";
+              </select>
+              <label for="displaybrightness">Display-Helligkeit</label>
+              <span class="helper-text">Live-Vorschau beim Ändern der Auswahl</span>
+            </div>
+            <div class="input-field custom-row">
+              <select id="loglevel" name="loglevel">
+                <option value="0")=====";
   if(logLevel==0) html += " selected";
-  html += ">Error</option>";
-  html += "<option value=\"1\"";
+  html += R"=====(>Error</option>
+                <option value="1")=====";
   if(logLevel==1) html += " selected";
-  html += ">Info</option>";
-  html += "<option value=\"2\"";
+  html += R"=====(>Info</option>
+                <option value="2")=====";
   if(logLevel==2) html += " selected";
-  html += ">Warning</option>";
-  html += "<option value=\"3\"";
+  html += R"=====(>Warning</option>
+                <option value="3")=====";
   if(logLevel==3) html += " selected";
-  html += ">Debug</option>";
-  html += "</select>";
-  html += "<label for=\"loglevel\">Log Level</label>";
-  html += "</div>";
-  
-  // Display-Typ Auswahl
-  html += "<div class=\"input-field custom-row\">";
-  html += "<select id=\"displaytype\" name=\"displaytype\">";
-  html += "<option value=\"1\"";
-  if(displayType==DISPLAY_SSD1306) html += " selected";
-  html += ">SSD1306 (kleines Display)</option>";
-  html += "<option value=\"0\"";
-  if(displayType==DISPLAY_SH1106G) html += " selected";
-  html += ">SH1106G (großes Display)</option>";
-  html += "</select>";
-  html += "<label for=\"displaytype\">Display-Typ</label>";
-  html += "</div>";
-  
-  // SSL-Zertifikat-Validierung (nur relevant für HTTPS-URLs)
-  html += "<div class=\"input-field custom-row\">";
-  html += "<select id=\"sslvalidation\" name=\"sslvalidation\">";
-  html += "<option value=\"0\"";
-  if(!sslValidation) html += " selected";
-  html += ">Deaktiviert (Self-Signed)</option>";
-  html += "<option value=\"1\"";
-  if(sslValidation) html += " selected";
-  html += ">Aktiviert (Offizielle Zerts)</option>";
-  html += "</select>";
-  html += "<label for=\"sslvalidation\">SSL-Zertifikatsprüfung</label>";
-  html += "<span class=\"helper-text\">Automatisch: HTTPS=verschlüsselt, HTTP=unverschlüsselt</span>";
-  html += "</div>";
-  
-  // MQTT Konfiguration Sektion
-  html += "<div class=\"divider\"></div>";
-  html += "<h5>MQTT Konfiguration</h5>";
-  
-  // MQTT Broker URL
-  html += "<div class=\"input-field custom-row\">";
-  html += "<input type=\"text\" id=\"mqttbroker\" name=\"mqttbroker\" value=\"" + String(mqttBroker) + "\" maxlength=\"63\">";
-  html += "<label for=\"mqttbroker\">MQTT Broker URL</label>";
-  html += "</div>";
-  
-  // MQTT Port
-  html += "<div class=\"input-field custom-row\">";
-  html += "<input type=\"number\" id=\"mqttport\" name=\"mqttport\" value=\"" + String(mqttPort) + "\" min=\"1\" max=\"65535\">";
-  html += "<label for=\"mqttport\">MQTT Port</label>";
-  html += "</div>";
-  
-  // MQTT Username (erweitert)
-  html += "<div class=\"input-field custom-row\">";
-  html += "<input type=\"text\" id=\"mqttuser\" name=\"mqttuser\" value=\"" + String(mqttUsername) + "\" maxlength=\"15\">";
-  html += "<label for=\"mqttuser\">MQTT Username</label>";
-  html += "</div>";
-  
-  // MQTT Password (erweitert auf 30 Zeichen)
-  html += "<div class=\"input-field custom-row\">";
-  html += "<input type=\"password\" id=\"mqttpass\" name=\"mqttpass\" value=\"" + String(mqttPassword) + "\" maxlength=\"30\">";
-  html += "<label for=\"mqttpass\">MQTT Password</label>";
-  html += "</div>";
-  
-  // CPU-Frequenz Auswahl
-  html += "<div class=\"input-field custom-row\">";
-  html += "<select id=\"cpufreq\" name=\"cpufreq\">";
-  html += "<option value=\"0\"";
+  html += R"=====(>Debug</option>
+              </select>
+              <label for="loglevel">Log Level</label>
+            </div>
+            <div class="input-field custom-row">
+              <select id="cpufreq" name="cpufreq">
+                <option value="0")=====";
   if(cpuFrequency==0) html += " selected";
-  html += ">240 MHz (Standard)</option>";
-  html += "<option value=\"1\"";
+  html += R"=====(>240 MHz (Standard)</option>
+                <option value="1")=====";
   if(cpuFrequency==1) html += " selected";
-  html += ">160 MHz (Reduziert)</option>";
-  html += "<option value=\"2\"";
+  html += R"=====(>160 MHz (Reduziert)</option>
+                <option value="2")=====";
   if(cpuFrequency==2) html += " selected";
-  html += ">80 MHz (Energiesparen)</option>";
-  html += "</select>";
-  html += "<label for=\"cpufreq\">CPU-Frequenz</label>";
-  html += "<span class=\"helper-text\">Niedrigere Frequenz = weniger Stromverbrauch</span>";
-  html += "</div>";
-  html += R"=====(
+  html += R"=====(>80 MHz (Energiesparen)</option>
+              </select>
+              <label for="cpufreq">CPU-Frequenz</label>
+              <span class="helper-text">Niedrigere Frequenz = weniger Stromverbrauch</span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Firmware Updates -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">system_update</i>Firmware Updates</span>
+            <div class="input-field custom-row">
+              <input id="otarepourl" name="otarepourl" type="url" maxlength="127" value=")=====";
+  html += String(otaRepoUrl);
+  html += R"=====(">
+              <label for="otarepourl" class="active">OTA Repository URL</label>
+              <span class="helper-text">GitHub Raw URL für automatische Firmware-Updates</span>
+            </div>
+          </div>
+        </div>
+        
         <button class="btn waves-effect waves-light teal" type="submit" id="savebtn">Speichern
           <i class="material-icons right">save</i>
         </button>
@@ -1378,12 +1385,17 @@ void handleRoot() {
         </div>
       </div>
       
-      <button class="btn blue" onclick="updateHardwareInfo()">Refresh Info</button>
+      <!-- Fixed Refresh Button -->
+      <div style="position: sticky; bottom: 20px; margin-top: 20px; text-align: right; z-index: 1000;">
+        <button class="btn blue waves-effect waves-light" onclick="updateHardwareInfo()">
+          <i class="material-icons left">refresh</i>Refresh Info
+        </button>
+      </div>
     </div>
     
     <div id="monitor" class="col s12">
       <h6>Serieller Monitor</h6>
-      <pre id="monitorArea" style="height:350px;overflow:auto;resize:vertical;border:1px solid #ccc;padding:10px;"></pre>
+      <pre id="monitorArea" style="overflow:auto;resize:vertical;border:1px solid #ccc;padding:10px;"></pre>
       <button class="btn red" onclick="clearMonitor()">Leeren</button>
       <script>
         document.addEventListener('DOMContentLoaded', function() {
@@ -1393,7 +1405,32 @@ void handleRoot() {
           M.FormSelect.init(selects, {});
           var modals = document.querySelectorAll('.modal');
           M.Modal.init(modals, {});
+          
+          // Monitor-Höhe automatisch an Display-Höhe anpassen
+          adjustMonitorHeight();
+          window.addEventListener('resize', adjustMonitorHeight);
         });
+        
+        // Automatische Monitor-Höhenanpassung
+        function adjustMonitorHeight() {
+          const monitorArea = document.getElementById('monitorArea');
+          if (monitorArea) {
+            // Verfügbare Viewport-Höhe minus Header, Navigation, Buttons etc.
+            const viewportHeight = window.innerHeight;
+            const headerHeight = 80; // Ungefähre Header-Höhe
+            const tabsHeight = 48; // Tab-Leiste
+            const titleHeight = 30; // "Serieller Monitor" Titel
+            const buttonHeight = 50; // "Leeren" Button + Padding
+            const padding = 40; // Zusätzlicher Puffer
+            
+            const availableHeight = viewportHeight - headerHeight - tabsHeight - titleHeight - buttonHeight - padding;
+            const minHeight = 200; // Mindesthöhe
+            const maxHeight = 800; // Maximale Höhe
+            
+            const calculatedHeight = Math.max(minHeight, Math.min(maxHeight, availableHeight));
+            monitorArea.style.height = calculatedHeight + 'px';
+          }
+        }
         function updateMonitor() {
           fetch('/monitor').then(r=>r.text()).then(t=>{
             let area = document.getElementById('monitorArea');
@@ -1713,13 +1750,11 @@ void handleRoot() {
 void handleSave() {
   if (server.hasArg("ssid")) strncpy(wifiSsid, server.arg("ssid").c_str(), 63);
   if (server.hasArg("pass")) strncpy(wifiPass, server.arg("pass").c_str(), 63);
-  if (server.hasArg("serverurl")) strncpy(serverUrl, server.arg("serverurl").c_str(), 63);
   if (server.hasArg("callsign")) strncpy(callsign, server.arg("callsign").c_str(), 31);
   if (server.hasArg("otarepourl")) strncpy(otaRepoUrl, server.arg("otarepourl").c_str(), 127);
   if (server.hasArg("baudrate")) baudrate = server.arg("baudrate").toInt();
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
-  if (server.hasArg("sslvalidation")) sslValidation = (server.arg("sslvalidation").toInt() == 1);
   if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
   if (server.hasArg("displaybrightness")) {
     int brightness = server.arg("displaybrightness").toInt();
