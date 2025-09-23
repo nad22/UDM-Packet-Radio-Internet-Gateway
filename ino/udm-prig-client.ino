@@ -1025,8 +1025,8 @@ void handleRoot() {
   html += R"=====(</h4>
     <ul id="tabs-swipe-demo" class="tabs">
       <li class="tab col s4"><a class="active" href="#hardware">Hardware</a></li>
-      <li class="tab col s4"><a href="#monitor">Monitor</a></li>
       <li class="tab col s4"><a href="#config">Config</a></li>
+      <li class="tab col s4"><a href="#monitor">Monitor</a></li>
     </ul>
     <div id="config" class="col s12">
       <h5>Konfiguration</h5>
@@ -1103,27 +1103,27 @@ void handleRoot() {
           <div class="card-content">
             <span class="card-title"><i class="material-icons left">cloud</i>MQTT Konfiguration</span>
             <div class="input-field custom-row">
-              <input type="text" id="mqttbroker" name="mqttbroker" value=")=====";
+              <input type="text" id="mqttbroker" name="mqttbroker" maxlength="63" value=")=====";
   html += String(mqttBroker);
-  html += R"=====(maxlength="63">
+  html += R"=====(">
               <label for="mqttbroker" class="active">MQTT Broker URL</label>
             </div>
             <div class="input-field custom-row">
-              <input type="number" id="mqttport" name="mqttport" value=")=====";
+              <input type="number" id="mqttport" name="mqttport" min="1" max="65535" value=")=====";
   html += String(mqttPort);
-  html += R"=====(min="1" max="65535">
+  html += R"=====(">
               <label for="mqttport" class="active">MQTT Port</label>
             </div>
             <div class="input-field custom-row">
-              <input type="text" id="mqttuser" name="mqttuser" value=")=====";
+              <input type="text" id="mqttuser" name="mqttuser" maxlength="15" value=")=====";
   html += String(mqttUsername);
-  html += R"=====(maxlength="15">
+  html += R"=====(">
               <label for="mqttuser" class="active">MQTT Username</label>
             </div>
             <div class="input-field custom-row">
-              <input type="password" id="mqttpass" name="mqttpass" value=")=====";
+              <input type="password" id="mqttpass" name="mqttpass" maxlength="30" value=")=====";
   html += String(mqttPassword);
-  html += R"=====(maxlength="30">
+  html += R"=====(">
               <label for="mqttpass" class="active">MQTT Password</label>
             </div>
           </div>
@@ -1166,7 +1166,6 @@ void handleRoot() {
   html += R"=====(>100% (Maximum)</option>
               </select>
               <label for="displaybrightness">Display-Helligkeit</label>
-              <span class="helper-text">Live-Vorschau beim Ändern der Auswahl</span>
             </div>
             <div class="input-field custom-row">
               <select id="loglevel" name="loglevel">
@@ -1198,7 +1197,6 @@ void handleRoot() {
   html += R"=====(>80 MHz (Energiesparen)</option>
               </select>
               <label for="cpufreq">CPU-Frequenz</label>
-              <span class="helper-text">Niedrigere Frequenz = weniger Stromverbrauch</span>
             </div>
           </div>
         </div>
@@ -1212,7 +1210,6 @@ void handleRoot() {
   html += String(otaRepoUrl);
   html += R"=====(">
               <label for="otarepourl" class="active">OTA Repository URL</label>
-              <span class="helper-text">GitHub Raw URL für automatische Firmware-Updates</span>
             </div>
           </div>
         </div>
@@ -1756,6 +1753,12 @@ void handleSave() {
   if (server.hasArg("loglevel")) logLevel = server.arg("loglevel").toInt();
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
   if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
+  
+  // MQTT Konfiguration
+  if (server.hasArg("mqttbroker")) strncpy(mqttBroker, server.arg("mqttbroker").c_str(), 63);
+  if (server.hasArg("mqttport")) mqttPort = server.arg("mqttport").toInt();
+  if (server.hasArg("mqttuser")) strncpy(mqttUsername, server.arg("mqttuser").c_str(), 15);
+  if (server.hasArg("mqttpass")) strncpy(mqttPassword, server.arg("mqttpass").c_str(), 30);
   if (server.hasArg("displaybrightness")) {
     int brightness = server.arg("displaybrightness").toInt();
     if(brightness >= 0 && brightness <= 255) {
