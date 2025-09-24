@@ -91,6 +91,7 @@
 #define CB_CHANNEL_OFFSET 496          // CB channel 1-40 (1 byte)
 #define PACKET_AUDIO_OFFSET 497        // Packet audio enabled/disabled (1 byte)
 #define AUDIO_VOLUME_OFFSET 498        // Audio volume level 0-100 (1 byte)
+#define TX_DELAY_OFFSET 499            // TX Delay in milliseconds (2 bytes)
 
 // Crash log system storage (EEPROM 500-1023)
 #define CRASH_LOG_START_OFFSET 500
@@ -198,7 +199,8 @@ char mqttPassword[32] = "";             // MQTT authentication password
 char mqttSharedSecret[32] = "";         // Shared secret for payload encryption
 uint8_t cbChannel = 1;                  // CB-Funk channel 1-40 (default: channel 1)
 bool packetAudioEnabled = true;         // Packet radio audio simulation enabled
-uint8_t audioVolume = 75;               // Audio volume level 0-100% (default: 75%)
+uint16_t txDelay = 100;                 // TX Delay in milliseconds (PTT to data start, default: 100ms)
+uint8_t audioVolume = 70;               // Audio volume level 0-100% (default: 70%)
 
 // ==================================================================================
 // MQTT CLIENT OBJECTS
@@ -672,7 +674,7 @@ void draw7SegmentDigit(int x, int y, uint8_t digit) {
 // CB channel display with "CH" + 7-segment digits + RX/TX (completely centered)
 void drawCBChannelDisplay() {
   // Calculate centered Y position between horizontal line (32) and display bottom (64)
-  int centerY = 45; // Centered between line and bottom edge
+  int centerY = 42; // Centered between line and bottom edge
   
   // Calculate horizontal centering for the COMPLETE CB display group
   // CH(12px) + gap(6px) + digit1(9px) + separation(2px) + digit2(9px) + gap(8px) + RX/TX(29px) = 75px total
@@ -797,7 +799,7 @@ void updateOLED() {
     display_ssd1306.print(callsign);
     
     drawWifiStrength(cachedStrength);
-    display_ssd1306.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
+    display_ssd1306.drawLine(0, 19, SCREEN_WIDTH, 19, getDisplayWhite());
     display_ssd1306.setTextSize(1);
     const char* mqttStatus;
     if (mqttEnabled) {
@@ -825,7 +827,7 @@ void updateOLED() {
     display_sh1106.print(callsign);
     
     drawWifiStrength(cachedStrength);
-    display_sh1106.drawLine(0, 20, SCREEN_WIDTH, 20, getDisplayWhite());
+    display_sh1106.drawLine(0, 19, SCREEN_WIDTH, 19, getDisplayWhite());
     display_sh1106.setTextSize(1);
     const char* mqttStatus;
     if (mqttEnabled) {
@@ -842,7 +844,7 @@ void updateOLED() {
     display_sh1106.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
     display_sh1106.setCursor((SCREEN_WIDTH - w) / 2, 22);
     display_sh1106.print(mqttStatus);
-    display_sh1106.drawLine(0, 32, SCREEN_WIDTH, 32, getDisplayWhite());
+    display_sh1106.drawLine(0, 31, SCREEN_WIDTH, 31, getDisplayWhite());
     drawCBChannelDisplay(); // New CB channel display instead of drawRXTXRects()
     display_sh1106.display();
   }
@@ -877,6 +879,10 @@ void saveConfig() {
   EEPROM.write(CB_CHANNEL_OFFSET, cbChannel); // Save CB channel
   EEPROM.write(PACKET_AUDIO_OFFSET, packetAudioEnabled ? 1 : 0); // Save packet audio setting
   EEPROM.write(AUDIO_VOLUME_OFFSET, audioVolume); // Save audio volume
+  
+  // Save TX Delay (2 bytes, little endian)
+  EEPROM.write(TX_DELAY_OFFSET, txDelay & 0xFF);
+  EEPROM.write(TX_DELAY_OFFSET+1, (txDelay >> 8) & 0xFF);
   
   EEPROM.commit();
 }
@@ -920,7 +926,14 @@ void loadConfig() {
   uint8_t audioSetting = EEPROM.read(PACKET_AUDIO_OFFSET); // Load packet audio setting
   packetAudioEnabled = (audioSetting == 1);
   audioVolume = EEPROM.read(AUDIO_VOLUME_OFFSET); // Load audio volume
-  if (audioVolume > 100) audioVolume = 75; // Fallback to 75% if invalid
+  if (audioVolume > 100) audioVolume = 70; // Fallback to 70% if invalid
+  
+  // Load TX Delay (2 bytes, little endian)
+  txDelay = ((uint16_t)EEPROM.read(TX_DELAY_OFFSET)) | ((uint16_t)EEPROM.read(TX_DELAY_OFFSET+1) << 8);
+  if (txDelay == 0xFFFF || txDelay == 0 || txDelay > 5000) {
+    txDelay = 100; // Default 100ms if invalid
+    appendMonitor("TX Delay war ungültig, auf 300ms gesetzt", "WARNING");
+  }
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
@@ -1281,6 +1294,81 @@ void handleRoot() {
           </div>
         </div>
         
+        <!-- Packet Radio Audio Konfiguration -->
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">volume_up</i>Packet Radio Audio</span>
+            <div class="input-field custom-row">
+              <select id="packetaudio" name="packetaudio">
+                <option value="1")=====";
+  if(packetAudioEnabled) html += " selected";
+  html += R"=====(>Aktiviert</option>
+                <option value="0")=====";
+  if(!packetAudioEnabled) html += " selected";
+  html += R"=====(>Deaktiviert</option>
+              </select>
+              <label for="packetaudio">1200 Baud Audio Simulation</label>
+              <span class="helper-text">I2S-AFSK Audio über MAX98357A (Pins 25/26/27). Studio-Qualität Bell 202 Sound!</span>
+            </div>
+            <div class="input-field custom-row">
+              <select id="audiovolume" name="audiovolume">
+                <option value="10")=====";
+  if(audioVolume >= 5 && audioVolume <= 15) html += " selected";
+  html += R"=====(>10% (Sehr leise)</option>
+                <option value="20")=====";
+  if(audioVolume >= 15 && audioVolume <= 25) html += " selected";
+  html += R"=====(>20% (Leise)</option>
+                <option value="30")=====";
+  if(audioVolume >= 25 && audioVolume <= 35) html += " selected";
+  html += R"=====(>30% (Niedrig)</option>
+                <option value="40")=====";
+  if(audioVolume >= 35 && audioVolume <= 45) html += " selected";
+  html += R"=====(>40% (Mittel-leise)</option>
+                <option value="50")=====";
+  if(audioVolume >= 45 && audioVolume <= 55) html += " selected";
+  html += R"=====(>50% (Normal)</option>
+                <option value="60")=====";
+  if(audioVolume >= 55 && audioVolume <= 65) html += " selected";
+  html += R"=====(>60% (Mittel)</option>
+                <option value="70")=====";
+  if(audioVolume >= 65 && audioVolume <= 75) html += " selected";
+  html += R"=====(>70% (Mittel-laut)</option>
+                <option value="80")=====";
+  if(audioVolume >= 75 && audioVolume <= 85) html += " selected";
+  html += R"=====(>80% (Laut)</option>
+                <option value="90")=====";
+  if(audioVolume >= 85 && audioVolume <= 95) html += " selected";
+  html += R"=====(>90% (Sehr laut)</option>
+                <option value="100")=====";
+  if(audioVolume >= 95) html += " selected";
+  html += R"=====(>100% (Maximum)</option>
+              </select>
+              <label for="audiovolume">Audio-Lautstärke</label>
+            </div>
+            <div class="input-field custom-row">
+              <select id="txdelay" name="txdelay">
+                <option value="50")=====";
+  if(txDelay >= 40 && txDelay <= 60) html += " selected";
+  html += R"=====(>50ms (Sehr schnell)</option>
+                <option value="100")=====";
+  if(txDelay >= 80 && txDelay <= 120) html += " selected";
+  html += R"=====(>100ms (Schnell)</option>
+                <option value="200")=====";
+  if(txDelay >= 180 && txDelay <= 220) html += " selected";
+  html += R"=====(>200ms (Mittel)</option>
+                <option value="300")=====";
+  if(txDelay >= 280 && txDelay <= 320) html += " selected";
+  html += R"=====(>300ms (Standard)</option>
+                <option value="500")=====";
+  if(txDelay >= 480 && txDelay <= 520) html += " selected";
+  html += R"=====(>500ms (Langsam)</option>
+              </select>
+              <label for="txdelay">TX Delay (PTT→Daten)</label>
+              <span class="helper-text">Zeit zwischen PTT-Aktivierung und Datenbeginn. Wichtig für Squelch-Öffnung und TX-Umschaltung!</span>
+            </div>
+          </div>
+        </div>
+        
         <!-- MQTT Konfiguration -->
         <div class="card">
           <div class="card-content">
@@ -1387,42 +1475,6 @@ void handleRoot() {
   html += R"=====(>80 MHz (Energiesparen)</option>
               </select>
               <label for="cpufreq">CPU-Frequenz</label>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Audio Konfiguration -->
-        <div class="card">
-          <div class="card-content">
-            <span class="card-title"><i class="material-icons left">volume_up</i>Packet Radio Audio</span>
-            <div class="input-field custom-row">
-              <select id="packetaudio" name="packetaudio">
-                <option value="1")=====";
-  if(packetAudioEnabled) html += " selected";
-  html += R"=====(>Aktiviert</option>
-                <option value="0")=====";
-  if(!packetAudioEnabled) html += " selected";
-  html += R"=====(>Deaktiviert</option>
-              </select>
-              <label for="packetaudio">1200 Baud Audio Simulation</label>
-              <span class="helper-text">I2S-AFSK Audio über MAX98357A (Pins 25/26/27). Studio-Qualität Bell 202 Sound!</span>
-            </div>
-            <div class="input-field custom-row">
-              <select id="audiovolume" name="audiovolume">
-                <option value="25")=====";
-  if(audioVolume >= 20 && audioVolume <= 30) html += " selected";
-  html += R"=====(>25% (Leise)</option>
-                <option value="50")=====";
-  if(audioVolume >= 45 && audioVolume <= 55) html += " selected";
-  html += R"=====(>50% (Normal)</option>
-                <option value="75")=====";
-  if(audioVolume >= 70 && audioVolume <= 80) html += " selected";
-  html += R"=====(>75% (Laut)</option>
-                <option value="100")=====";
-  if(audioVolume >= 95) html += " selected";
-  html += R"=====(>100% (Maximum)</option>
-              </select>
-              <label for="audiovolume">Audio-Lautstärke</label>
             </div>
           </div>
         </div>
@@ -2009,6 +2061,13 @@ void handleSave() {
     if(newVolume >= 0 && newVolume <= 100) {
       audioVolume = newVolume;
       appendMonitor("Audio-Lautstärke gesetzt auf " + String(audioVolume) + "%", "INFO");
+    }
+  }
+  if (server.hasArg("txdelay")) {
+    uint16_t newTxDelay = server.arg("txdelay").toInt();
+    if(newTxDelay >= 50 && newTxDelay <= 2000) {
+      txDelay = newTxDelay;
+      appendMonitor("TX Delay gesetzt auf " + String(txDelay) + "ms", "INFO");
     }
   }
   
@@ -3647,8 +3706,20 @@ void playByte(uint8_t data, bool isTx = false) {
 void playPacketAudio(const String& hexData, bool isTx) {
   if (!packetAudioEnabled) return;
   
-  // Short pause before frame
-  delay(50);
+  // TX Delay Simulation - PTT to data start delay
+  // This simulates the time needed for:
+  // - Radio to switch from RX to TX mode
+  // - Receiver squelch to open properly
+  // - TX circuits to stabilize
+  if (isTx && txDelay > 0) {
+    // Play carrier tone during TX delay (authentic packet radio behavior)
+    int carrierFreq = (FREQ_MARK + FREQ_SPACE) / 2; // Carrier between mark/space
+    appendMonitor("TX Delay: " + String(txDelay) + "ms (carrier tone)", "DEBUG");
+    playTone(carrierFreq, txDelay * 1000); // Convert ms to microseconds
+  } else {
+    // Short pause for RX or if TX delay is disabled
+    delay(50);
+  }
   
   // TX/RX distinction: TX slightly lower
   int markFreq = isTx ? (FREQ_MARK - 100) : FREQ_MARK;
