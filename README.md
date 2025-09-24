@@ -2,52 +2,72 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-2.1.0-blue.svg)
+![Version](https://img.shields.io/badge/version-3.0.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-ESP32-red.svg)
-![Protocol](https://img.shields.io/badge/protocol-AX.25%20%7C%20KISS-orange.svg)
+![Protocol](https://img.shields.io/badge/protocol-MQTT%20%7C%20AFSK%20%7C%20KISS-orange.svg)
 
-*Moderne Packet Radio Gateway Lösung mit Smart-Polling und GitHub-basiertem OTA-Update System*
+*Modern Serverless Packet Radio Gateway with CB-Funk Simulation and Studio-Quality AFSK Audio*
 
-[🚀 Features](#-features) • [📋 Installation](#-installation) • [🔧 Konfiguration](#-konfiguration) • [📖 Dokumentation](#-dokumentation)
+[🚀 Features](#-features) • [📋 Installation](#-installation) • [🔧 Configuration](#-configuration) • [📖 Documentation](#-documentation)
 
 </div>
 
 ---
 
-## 🎯 Überblick
+## 🎯 Overview
 
-Das **UDM Packet Radio Internet Gateway (PRIG)** ist eine moderne, ESP32-basierte Lösung für Packet Radio Kommunikation. Es verbindet traditionelle AX.25/KISS Packet Radio Terminals mit modernen Internet-Technologien und bietet dabei ultra-schnelle Nachrichtenübertragung durch ein innovatives Smart-Polling System.
+The **UDM Packet Radio Internet Gateway (PRIG)** is a revolutionary ESP32-based solution that transforms traditional packet radio communication into a modern, serverless MQTT broadcast system. It simulates CB-Funk behavior with channel selection, encrypted payload transmission, and authentic Bell 202 AFSK audio generation.
 
-### 🌟 Highlights
+### 🌟 Key Features
 
-- **⚡ Smart-Polling**: Nachrichten kommen in 0.5-2 Sekunden an (vs. 10+ Sekunden traditionell)
-- **🔄 GitHub OTA-Updates**: Vollautomatische Firmware-Updates über GitHub
-- **📱 Responsive Web-Interface**: Optimiert für Desktop und Mobile
-- **🖥️ TSTHost Kompatibilität**: 100% kompatibel mit gängigen Terminal-Programmen
-- **🔍 Erweiterte Debug-Features**: Umfassendes Logging mit HEX-Dumps und KISS-Dekodierung
-- **⚙️ EEPROM-Konfiguration**: Persistente Einstellungen und Versionsverwaltung
+- **📻 CB-Funk Simulation**: 40-channel broadcast system mimicking classic CB radio
+- **� Encrypted Payloads**: XOR encryption with shared secret for secure communication
+- **🎵 Studio-Quality AFSK**: I2S audio with MAX98357A for authentic Bell 202 sound
+- **🌐 Serverless Architecture**: Pure MQTT broadcast, no server dependencies
+- **� Professional UI**: 7-segment CB channel display with brightness control
+- **⚙️ Advanced Configuration**: Thematic web interface with live controls
 
 ---
 
 ## 🚀 Features
 
-### 📡 Packet Radio
-- **AX.25/KISS Protokoll**: Vollständige Implementierung für RS232 @ 2400 Baud
-- **Binary Frame Processing**: Exakte KISS-Frame-Verarbeitung mit TSTHost-Kompatibilität
-- **Smart Frame Generation**: Automatische AX.25-Header-Generierung
-- **Multi-Client Support**: Verwaltung mehrerer Packet Radio Clients
+### � CB-Funk MQTT System
+- **40 Channel Support**: CB channels 1-40 with professional 7-segment display
+- **Broadcast Architecture**: Serverless MQTT topics `udmprig/rf/1` to `udmprig/rf/40`
+- **HiveMQ Cloud**: SSL/TLS encrypted MQTT broker connectivity
+- **Channel Switching**: Live channel selection with instant topic switching
 
-### 🌐 Internet Gateway
-- **HTTP/WiFi Bridge**: Nahtlose Verbindung zwischen Packet Radio und Internet
-- **Base64 Encoding**: Sichere Übertragung binärer KISS-Frames
-- **Smart-Polling System**: Adaptive Polling-Intervalle (500ms-2s)
-- **Database Notifications**: Effiziente Nachrichten-Queue-Verwaltung
+### 🔒 Security & Encryption
+- **Payload Encryption**: XOR encryption with configurable shared secret
+- **EEPROM Storage**: Persistent encryption keys and configuration
+- **JSON Structure**: Clean message format with encrypted payload field
+- **Selective Encryption**: Only payload data encrypted, metadata readable
 
-### 🔧 Administration
-- **Web-Interface**: Moderne, responsive Benutzeroberfläche
-- **Client Management**: Einfache Verwaltung von Packet Radio Clients
-- **Server Configuration**: Zentrale Konfiguration von Callsign und Log-Level
+### 🎵 Professional AFSK Audio
+- **I2S Audio Output**: MAX98357A amplifier for studio-quality sound
+- **Bell 202 Standard**: Authentic 1200/2200 Hz Mark/Space frequencies
+- **Phase-Continuous**: Smooth frequency transitions for clean AFSK
+- **Volume Control**: 0-100% adjustable audio level
+- **TX/RX Differentiation**: Frequency offset for authentic radio feel
+
+### 🌐 Network & Connectivity
+- **WiFi Management**: WPA2 with connection monitoring and auto-reconnect
+- **MQTT SSL/TLS**: Secure encrypted communication to cloud broker
+- **mDNS Discovery**: Easy network discovery as `udm-prig.local`
+- **Web Configuration**: Responsive HTML5 interface with real-time updates
+
+### 🖥️ Display & Interface
+- **OLED Support**: SH1106G and SSD1306 displays with auto-detection
+- **7-Segment CB Display**: Professional channel indication (01-40)
+- **Brightness Control**: 0-100% adjustable display brightness
+- **Live Status**: Real-time TX/RX indicators and connection status
+
+### 🔧 Advanced Configuration
+- **Thematic Web UI**: Grouped configuration cards for better organization
+- **EEPROM Persistence**: All settings stored in non-volatile memory
+- **CPU Frequency**: Performance optimization (240/160/80 MHz)
+- **Debug Levels**: Comprehensive logging with HEX dumps and protocol analysis
 - **Real-time Monitoring**: Live-Monitor mit erweiterten Debug-Informationen
 
 ### 🔄 OTA-System

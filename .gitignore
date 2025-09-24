@@ -1,0 +1,36 @@
+# MQTT Credentials - NIEMALS committen!
+mqtt_credentials.php
+
+# Lokale Konfigurationsdateien
+config.local.php
+.env
+
+# SSL Zertifikate
+certs/
+*.crt
+*.key
+*.pem
+
+# IDE und Editor Dateien
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# System Dateien
+.DS_Store
+Thumbs.db
+
+# Log Dateien
+*.log
+logs/
+
+# Temporäre Dateien
+tmp/
+temp/
+cache/
+
+# Backup Dateien
+*.bak
+*.backup
