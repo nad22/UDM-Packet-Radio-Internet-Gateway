@@ -633,42 +633,24 @@ void draw7SegmentDigit(int x, int y, uint8_t digit) {
   
   if(digit > 9) return;
   
-  int segLen = 6;   // Segment length (smaller for more space)
+  int segLen = 7;   // Segment length (smaller for more space)
   int segThick = 1; // Segment thickness (thin)
   int gap = 1;      // Gap between segments (IMPORTANT!)
   
   // Segment positions with gaps between segments
-  if (displayType == DISPLAY_SSD1306) {
-    // Segment A (top)
-    if(segments[digit][0]) display_ssd1306.fillRect(x+gap+1, y, segLen, segThick, getDisplayWhite());
-    // Segment B (top right)  
-    if(segments[digit][1]) display_ssd1306.fillRect(x+segLen+gap+1, y+gap+1, segThick, segLen-1, getDisplayWhite());
-    // Segment C (bottom right)
-    if(segments[digit][2]) display_ssd1306.fillRect(x+segLen+gap+1, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
-    // Segment D (bottom)
-    if(segments[digit][3]) display_ssd1306.fillRect(x+gap+1, y+2*segLen+2*gap+1, segLen, segThick, getDisplayWhite());
-    // Segment E (bottom left)
-    if(segments[digit][4]) display_ssd1306.fillRect(x, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
-    // Segment F (top left)
-    if(segments[digit][5]) display_ssd1306.fillRect(x, y+gap+1, segThick, segLen-1, getDisplayWhite());
-    // Segment G (middle)
-    if(segments[digit][6]) display_ssd1306.fillRect(x+gap+1, y+segLen+gap+1, segLen, segThick, getDisplayWhite());
-  } else {
-    // Segment A (top)
-    if(segments[digit][0]) display_sh1106.fillRect(x+gap+1, y, segLen, segThick, getDisplayWhite());
-    // Segment B (top right)
-    if(segments[digit][1]) display_sh1106.fillRect(x+segLen+gap+1, y+gap+1, segThick, segLen-1, getDisplayWhite());
-    // Segment C (bottom right)
-    if(segments[digit][2]) display_sh1106.fillRect(x+segLen+gap+1, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
-    // Segment D (bottom)
-    if(segments[digit][3]) display_sh1106.fillRect(x+gap+1, y+2*segLen+2*gap+1, segLen, segThick, getDisplayWhite());
-    // Segment E (bottom left)
-    if(segments[digit][4]) display_sh1106.fillRect(x, y+segLen+gap+2, segThick, segLen-1, getDisplayWhite());
-    // Segment F (top left)
-    if(segments[digit][5]) display_sh1106.fillRect(x, y+gap+1, segThick, segLen-1, getDisplayWhite());
-    // Segment G (middle)
-    if(segments[digit][6]) display_sh1106.fillRect(x+gap+1, y+segLen+gap+1, segLen, segThick, getDisplayWhite());
-  }
+  if(segments[digit][0]) display_sh1106.fillRect(x+gap, y, segLen, segThick, getDisplayWhite());
+  // Segment B (top right)
+  if(segments[digit][1]) display_sh1106.fillRect(x+segLen+gap, y+gap, segThick, segLen, getDisplayWhite());
+  // Segment C (bottom right)
+  if(segments[digit][2]) display_sh1106.fillRect(x+segLen+gap, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
+  // Segment D (bottom)
+  if(segments[digit][3]) display_sh1106.fillRect(x+gap, y+2*segLen+2*gap, segLen, segThick, getDisplayWhite());
+  // Segment E (bottom left)
+  if(segments[digit][4]) display_sh1106.fillRect(x, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
+  // Segment F (top left)
+  if(segments[digit][5]) display_sh1106.fillRect(x, y+gap, segThick, segLen, getDisplayWhite());
+  // Segment G (middle)
+  if(segments[digit][6]) display_sh1106.fillRect(x+gap, y+segLen+gap, segLen, segThick, getDisplayWhite());
 }
 
 // CB channel display with "CH" + 7-segment digits + RX/TX (completely centered)
