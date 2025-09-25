@@ -92,11 +92,14 @@
 #define PACKET_AUDIO_OFFSET 497        // Packet audio enabled/disabled (1 byte)
 #define AUDIO_VOLUME_OFFSET 498        // Audio volume level 0-100 (1 byte)
 #define TX_DELAY_OFFSET 499            // TX Delay in milliseconds (2 bytes)
+#define FREQ_MARK_OFFSET 501           // AFSK Mark frequency (2 bytes, default: 1200 Hz)
+#define FREQ_SPACE_OFFSET 503          // AFSK Space frequency (2 bytes, default: 2200 Hz)
+#define HARDWARE_GAIN_OFFSET 505       // Hardware gain level 0-3 (1 byte)
 
-// Crash log system storage (EEPROM 500-1023)
-#define CRASH_LOG_START_OFFSET 500
-#define CRASH_LOG_COUNT_OFFSET 500     // Number of crash logs (4 bytes)
-#define CRASH_LOG_ENTRIES_OFFSET 504   // Crash log entries (5 x 120 = 600 bytes)
+// Crash log system storage (EEPROM 510-1023) - MOVED to avoid conflicts
+#define CRASH_LOG_START_OFFSET 510
+#define CRASH_LOG_COUNT_OFFSET 510     // Number of crash logs (4 bytes)
+#define CRASH_LOG_ENTRIES_OFFSET 514   // Crash log entries (5 x 120 = 600 bytes)
 #define CRASH_LOG_ENTRY_SIZE 120       // Entry size: timestamp (20) + message (100)
 #define MAX_CRASH_LOGS 5               // Maximum number of stored crash logs
 
@@ -111,14 +114,14 @@
 #define I2S_DOUT_PIN 25              // DIN pin of MAX98357A
 #define I2S_BCLK_PIN 26              // BCLK pin of MAX98357A  
 #define I2S_LRC_PIN  27              // LRC pin of MAX98357A
+#define I2S_GAIN_PIN 33              // GAIN pin of MAX98357A (hardware volume control)
 
 // ==================================================================================
 // AFSK (Audio Frequency Shift Keying) CONFIGURATION
 // ==================================================================================
 
 // Bell 202 modem frequencies for 1200 baud packet radio (AFSK standard)
-#define FREQ_MARK  1200              // Logical "1" (high tone frequency)
-#define FREQ_SPACE 2200              // Logical "0" (low tone frequency)
+// Note: These are now configurable - see global variables afskFreqMark and afskFreqSpace
 #define BAUD_RATE  1200              // Bits per second
 #define BIT_DURATION_US (1000000 / BAUD_RATE)  // ~833 microseconds per bit
 
@@ -163,6 +166,16 @@ unsigned long lastKeepalive = 0;        // Keepalive timing
 const unsigned long KEEPALIVE_INTERVAL = 10000;  // 10 second keepalive interval
 unsigned long lastRS232 = 0;            // RS232 activity timing
 
+// Boot message buffer system to avoid appendMonitor() timeouts during initialization
+#define MAX_BOOT_MESSAGES 20
+struct BootMessage {
+  String message;
+  String level;
+};
+BootMessage bootMessages[MAX_BOOT_MESSAGES];
+int bootMessageCount = 0;
+bool systemReady = false;               // System fully initialized flag
+
 // RX/TX activity indicators for display
 unsigned long lastRX = 0;               // Last receive timestamp
 unsigned long lastTX = 0;               // Last transmit timestamp
@@ -201,6 +214,9 @@ uint8_t cbChannel = 1;                  // CB-Funk channel 1-40 (default: channe
 bool packetAudioEnabled = true;         // Packet radio audio simulation enabled
 uint16_t txDelay = 100;                 // TX Delay in milliseconds (PTT to data start, default: 100ms)
 uint8_t audioVolume = 70;               // Audio volume level 0-100% (default: 70%)
+uint16_t afskFreqMark = 1200;           // AFSK Mark frequency (configurable, default: 1200 Hz)
+uint16_t afskFreqSpace = 2200;          // AFSK Space frequency (configurable, default: 2200 Hz)
+uint8_t hardwareGain = 0;               // Hardware gain level (0=9dB, 1=6dB, 2=12dB, 3=15dB)
 
 // ==================================================================================
 // MQTT CLIENT OBJECTS
@@ -345,6 +361,8 @@ void setDisplayBrightness(uint8_t brightness); // Set display brightness level
 
 // Audio system functions
 void setupI2SAudio();                          // Initialize I2S audio system
+void setupHardwareGain();                         // Initialize hardware gain control
+void setHardwareGain(uint8_t gainLevel);          // Set hardware gain level (0-3)
 
 // KISS protocol processing
 void processCompleteKissMessage(const String& kissData);
@@ -397,22 +415,38 @@ const char* root_ca = \
  * @return true if initialization successful, false otherwise
  */
 bool initDisplay() {
+  // Fast display initialization - show boot message immediately
+  bool success = false;
+  
   if (displayType == DISPLAY_SSD1306) {
-    if (!display_ssd1306.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-      return false;
+    success = display_ssd1306.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+    if (success) {
+      display_ssd1306.clearDisplay();
+      // Show immediate boot message
+      display_ssd1306.setTextSize(1);
+      display_ssd1306.setTextColor(WHITE);
+      display_ssd1306.setCursor(0,0);
+      display_ssd1306.println("UDM-PRIG Client");
+      display_ssd1306.println("Booting...");
+      display_ssd1306.display();
+      setDisplayBrightness(displayBrightness);
     }
-    display_ssd1306.clearDisplay();
-    display_ssd1306.display();
-    setDisplayBrightness(displayBrightness); // Apply stored brightness level
   } else {
-    if (!display_sh1106.begin(0x3C)) {
-      return false;
+    success = display_sh1106.begin(0x3C);
+    if (success) {
+      display_sh1106.clearDisplay();
+      // Show immediate boot message
+      display_sh1106.setTextSize(1);
+      display_sh1106.setTextColor(WHITE);
+      display_sh1106.setCursor(0,0);
+      display_sh1106.println("UDM-PRIG Client");
+      display_sh1106.println("Booting...");
+      display_sh1106.display();
+      setDisplayBrightness(displayBrightness);
     }
-    display_sh1106.clearDisplay();
-    display_sh1106.display();
-    setDisplayBrightness(displayBrightness); // Apply stored brightness level
   }
-  return true;
+  
+  return success;
 }
 
 // HTTPS HTTPClient configuration with automatic URL detection
@@ -448,36 +482,94 @@ uint16_t getDisplayWhite() {
 
 /**
  * Display boot messages on OLED screen during startup
- * Automatically scrolls text when screen is full
+ * Implements true Linux-style scrolling without clearing display
  * @param msg Message to display (truncated to fit display width)
  */
 void bootPrint(const String &msg) {
-  static int line = 0;
+  static String bootLines[8] = {"", "", "", "", "", "", "", ""}; // Buffer for 8 lines
+  static int currentLine = 0;
+  static bool displayFull = false;
   
-  if (displayType == DISPLAY_SSD1306) {
-    display_ssd1306.setTextSize(1);
-    display_ssd1306.setTextColor(getDisplayWhite());
-    display_ssd1306.setCursor(0, 8 * line++);
-    String showMsg = msg.substring(0, OLED_LINE_LEN); // max 33 characters
-    display_ssd1306.print(showMsg);
-    display_ssd1306.display();
-    if (line >= 8) {
-      display_ssd1306.clearDisplay();
-      line = 0;
+  // Truncate message to fit display width
+  String showMsg = msg.substring(0, OLED_LINE_LEN);
+  
+  if (!displayFull && currentLine < 8) {
+    // Display is not full yet, just add new line
+    bootLines[currentLine] = showMsg;
+    currentLine++;
+    if (currentLine >= 8) {
+      displayFull = true;
     }
   } else {
+    // Display is full, scroll up (Linux-style)
+    for (int i = 0; i < 7; i++) {
+      bootLines[i] = bootLines[i + 1];
+    }
+    bootLines[7] = showMsg; // Add new message at bottom
+  }
+  
+  // Redraw entire display with all lines
+  if (displayType == DISPLAY_SSD1306) {
+    display_ssd1306.clearDisplay();
+    display_ssd1306.setTextSize(1);
+    display_ssd1306.setTextColor(getDisplayWhite());
+    
+    for (int i = 0; i < 8; i++) {
+      if (bootLines[i].length() > 0) {
+        display_ssd1306.setCursor(0, i * 8);
+        display_ssd1306.print(bootLines[i]);
+      }
+    }
+    display_ssd1306.display();
+  } else {
+    display_sh1106.clearDisplay();
     display_sh1106.setTextSize(1);
     display_sh1106.setTextColor(getDisplayWhite());
-    display_sh1106.setCursor(0, 8 * line++);
-    String showMsg = msg.substring(0, OLED_LINE_LEN); // max 33 characters
-    display_sh1106.print(showMsg);
-    display_sh1106.display();
-    if (line >= 8) {
-      display_sh1106.clearDisplay();
-      line = 0;
+    
+    for (int i = 0; i < 8; i++) {
+      if (bootLines[i].length() > 0) {
+        display_sh1106.setCursor(0, i * 8);
+        display_sh1106.print(bootLines[i]);
+      }
     }
+    display_sh1106.display();
   }
-  delay(300);
+  
+  delay(200); // Reduced delay for smoother scrolling
+}
+
+/**
+ * Adds a boot message to the buffer instead of calling appendMonitor() during initialization
+ * This prevents timeout issues when WiFi/NTP are not yet ready
+ */
+void addBootMessage(const String &message, const char* level) {
+  if (systemReady) {
+    // System is ready, write directly to monitor
+    appendMonitor(message, level);
+  } else {
+    // System not ready yet, buffer the message
+    if (bootMessageCount < MAX_BOOT_MESSAGES) {
+      bootMessages[bootMessageCount].message = message;
+      bootMessages[bootMessageCount].level = String(level); // Convert to String for storage
+      bootMessageCount++;
+    }
+    // Also write to serial for immediate feedback
+    Serial.println(String(level) + ": " + message);
+  }
+}
+
+/**
+ * Flushes all buffered boot messages to the monitor system
+ * Called once the system is fully initialized
+ */
+void flushBootMessages() {
+  Serial.println("Flushing " + String(bootMessageCount) + " buffered boot messages...");
+  for (int i = 0; i < bootMessageCount; i++) {
+    appendMonitor(bootMessages[i].message, bootMessages[i].level.c_str());
+    delay(50); // Small delay to avoid overwhelming the system
+  }
+  bootMessageCount = 0; // Clear the buffer
+  systemReady = true;   // Mark system as ready for direct appendMonitor calls
 }
 
 void showOTAUpdateScreen(const char* text, float progress = -1) {
@@ -866,11 +958,20 @@ void saveConfig() {
   EEPROM.write(TX_DELAY_OFFSET, txDelay & 0xFF);
   EEPROM.write(TX_DELAY_OFFSET+1, (txDelay >> 8) & 0xFF);
   
+  // Save AFSK frequencies (2 bytes each, little endian)
+  EEPROM.write(FREQ_MARK_OFFSET, afskFreqMark & 0xFF);
+  EEPROM.write(FREQ_MARK_OFFSET+1, (afskFreqMark >> 8) & 0xFF);
+  EEPROM.write(FREQ_SPACE_OFFSET, afskFreqSpace & 0xFF);
+  EEPROM.write(FREQ_SPACE_OFFSET+1, (afskFreqSpace >> 8) & 0xFF);
+  
+  // Save hardware gain level
+  EEPROM.write(HARDWARE_GAIN_OFFSET, hardwareGain);
+  
   EEPROM.commit();
 }
 
 void loadConfig() {
-  EEPROM.begin(EEPROM_SIZE);
+  // EEPROM.begin() already called in setup() - don't call again to avoid timeout
   for (int i = 0; i < 64; ++i) wifiSsid[i] = EEPROM.read(SSID_OFFSET+i);
   wifiSsid[63] = 0;
   for (int i = 0; i < 64; ++i) wifiPass[i] = EEPROM.read(PASS_OFFSET+i);
@@ -914,41 +1015,79 @@ void loadConfig() {
   txDelay = ((uint16_t)EEPROM.read(TX_DELAY_OFFSET)) | ((uint16_t)EEPROM.read(TX_DELAY_OFFSET+1) << 8);
   if (txDelay == 0xFFFF || txDelay == 0 || txDelay > 5000) {
     txDelay = 100; // Default 100ms if invalid
-    appendMonitor("TX Delay war ungültig, auf 300ms gesetzt", "WARNING");
+    addBootMessage("TX Delay war ungültig, auf 100ms gesetzt", "WARNING");
+  }
+  
+  // Load AFSK frequencies (2 bytes each, little endian)
+  afskFreqMark = ((uint16_t)EEPROM.read(FREQ_MARK_OFFSET)) | ((uint16_t)EEPROM.read(FREQ_MARK_OFFSET+1) << 8);
+  afskFreqSpace = ((uint16_t)EEPROM.read(FREQ_SPACE_OFFSET)) | ((uint16_t)EEPROM.read(FREQ_SPACE_OFFSET+1) << 8);
+  
+  // Debug output for EEPROM values
+  Serial.println("DEBUG: EEPROM Werte gelesen:");
+  Serial.println("  afskFreqMark  = " + String(afskFreqMark) + " Hz (Offset " + String(FREQ_MARK_OFFSET) + ")");
+  Serial.println("  afskFreqSpace = " + String(afskFreqSpace) + " Hz (Offset " + String(FREQ_SPACE_OFFSET) + ")");
+  
+  // Validate AFSK frequencies and set defaults if invalid
+  bool configChanged = false;
+  if (afskFreqMark == 0xFFFF || afskFreqMark == 0 || afskFreqMark > 5000) {
+    afskFreqMark = 1200; // Default Bell 202 Mark frequency
+    addBootMessage("AFSK Mark-Frequenz war ungültig (" + String(afskFreqMark) + "), auf 1200Hz gesetzt", "WARNING");
+    configChanged = true;
+  }
+  if (afskFreqSpace == 0xFFFF || afskFreqSpace == 0 || afskFreqSpace > 5000) {
+    afskFreqSpace = 2200; // Default Bell 202 Space frequency
+    addBootMessage("AFSK Space-Frequenz war ungültig (" + String(afskFreqSpace) + "), auf 2200Hz gesetzt", "WARNING");
+    configChanged = true;
+  }
+  
+  // Load hardware gain level
+  hardwareGain = EEPROM.read(HARDWARE_GAIN_OFFSET);
+  Serial.println("  hardwareGain  = " + String(hardwareGain) + " (Offset " + String(HARDWARE_GAIN_OFFSET) + ")");
+  
+  if (hardwareGain > 3 || hardwareGain == 0xFF) {
+    hardwareGain = 0; // Default to 9dB if invalid
+    addBootMessage("Hardware-Verstärkung war ungültig (" + String(hardwareGain) + "), auf 9dB gesetzt", "WARNING");
+    configChanged = true;
+  }
+  
+  // Save defaults to EEPROM if any values were invalid
+  if (configChanged) {
+    Serial.println("Speichere korrigierte Werte ins EEPROM...");
+    saveConfig();
   }
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
-    appendMonitor("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
+    addBootMessage("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
   }
   if(logLevel > 3) logLevel = 1;
   if(displayType > 1) displayType = DISPLAY_SSD1306;  // Default to SSD1306 for invalid value
-  if(strlen(wifiSsid) == 0) appendMonitor("WiFi SSID is empty!", "WARNING");
+  if(strlen(wifiSsid) == 0) addBootMessage("WiFi SSID is empty!", "WARNING");
   if(strlen(otaRepoUrl) == 0) {
     strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
-    appendMonitor("OTA URL war leer, Standard gesetzt", "WARNING");
+    addBootMessage("OTA URL war leer, Standard gesetzt", "WARNING");
   }
   if(strlen(localVersion) == 0 || localVersion[0] == 0xFF) {
     strcpy(localVersion, "1.0.1");
-    appendMonitor("Version was empty, default set: " + String(localVersion), "WARNING");
+    addBootMessage("Version was empty, default set: " + String(localVersion), "WARNING");
     saveConfig(); // Save default version
   }
   
   // Validate MQTT configuration
   if(mqttPort == 0 || mqttPort == 0xFFFF) {
     mqttPort = 8883; // Default SSL port
-    appendMonitor("MQTT port invalid, set to 8883", "WARNING");
+    addBootMessage("MQTT port invalid, set to 8883", "WARNING");
   }
   // MQTT is always enabled (pure MQTT implementation)
   mqttEnabled = true;
   if(strlen(mqttBroker) == 0) {
-    appendMonitor("MQTT broker URL not configured - please set!", "WARNING");
+    addBootMessage("MQTT broker URL not configured - please set!", "WARNING");
   }
   
   // Validate CB channel (1-40)
   if(cbChannel < 1 || cbChannel > 40 || cbChannel == 0xFF) {
     cbChannel = 1; // Default CB channel 1
-    appendMonitor("CB channel invalid, set to channel 1", "WARNING");
+    addBootMessage("CB channel invalid, set to channel 1", "WARNING");
   }
   
   // Validate CPU frequency value and correct problematic settings
@@ -956,11 +1095,11 @@ void loadConfig() {
     if(cpuFrequency == 3 || cpuFrequency == 4) {
       // Correct old problematic 40MHz (3) or 26MHz (4) settings
       cpuFrequency = 2; // Set to 80 MHz (safe)
-      appendMonitor("CPU frequency corrected: Problematic setting changed to 80 MHz", "WARNING");
+      addBootMessage("CPU frequency corrected: Problematic setting changed to 80 MHz", "WARNING");
       saveConfig(); // Save immediately to prevent boot loop
     } else {
       cpuFrequency = 0; // Fallback to 240 MHz
-      appendMonitor("CPU frequency invalid, reset to 240 MHz", "WARNING");
+      addBootMessage("CPU frequency invalid, reset to 240 MHz", "WARNING");
     }
   }
 }
@@ -1106,7 +1245,22 @@ void handleMqttLoop() {
 
 // Check MQTT connection status
 bool isMqttConnected() {
-  return mqttEnabled && mqttClient.connected();
+  bool connected = mqttEnabled && mqttClient.connected();
+  static bool lastState = false;
+  static unsigned long lastLog = 0;
+  
+  // Log connection state changes
+  if (connected != lastState || (millis() - lastLog > 30000)) {
+    if (connected) {
+      appendMonitor("MQTT Status: VERBUNDEN (" + String(mqttBroker) + ")", "INFO");
+    } else {
+      appendMonitor("MQTT Status: NICHT VERBUNDEN (Broker: " + String(mqttBroker) + ")", "WARNING");
+    }
+    lastState = connected;
+    lastLog = millis();
+  }
+  
+  return connected;
 }
 
 // ========================================
@@ -1326,6 +1480,38 @@ void handleRoot() {
   html += R"=====(>100% (Maximum)</option>
               </select>
               <label for="audiovolume">Audio-Lautstärke</label>
+            </div>
+            <div class="input-field custom-row">
+              <input id="freqmark" name="freqmark" type="number" min="300" max="5000" value=")=====";
+  html += String(afskFreqMark);
+  html += R"=====(">
+              <label for="freqmark">AFSK Mark-Frequenz (Hz)</label>
+              <span class="helper-text">Frequenz für logische "1" (Bell 202 Standard: 1200Hz)</span>
+            </div>
+            <div class="input-field custom-row">
+              <input id="freqspace" name="freqspace" type="number" min="300" max="5000" value=")=====";
+  html += String(afskFreqSpace);
+  html += R"=====(">
+              <label for="freqspace">AFSK Space-Frequenz (Hz)</label>
+              <span class="helper-text">Frequenz für logische "0" (Bell 202 Standard: 2200Hz)</span>
+            </div>
+            <div class="input-field custom-row">
+              <select id="hardwaregain" name="hardwaregain">
+                <option value="0")=====";
+  if(hardwareGain == 0) html += " selected";
+  html += R"=====(>9dB (Standard)</option>
+                <option value="1")=====";
+  if(hardwareGain == 1) html += " selected";
+  html += R"=====(>6dB (Leiser)</option>
+                <option value="2")=====";
+  if(hardwareGain == 2) html += " selected";
+  html += R"=====(>12dB (Lauter)</option>
+                <option value="3")=====";
+  if(hardwareGain == 3) html += " selected";
+  html += R"=====(>15dB (Maximum)</option>
+              </select>
+              <label for="hardwaregain">Hardware-Verstärkung</label>
+              <span class="helper-text">Hardware-Gain am MAX98357A (GPIO33). Zusätzlich zur Software-Lautstärke!</span>
             </div>
             <div class="input-field custom-row">
               <select id="txdelay" name="txdelay">
@@ -2052,6 +2238,27 @@ void handleSave() {
       appendMonitor("TX Delay gesetzt auf " + String(txDelay) + "ms", "INFO");
     }
   }
+  if (server.hasArg("freqmark")) {
+    uint16_t newFreqMark = server.arg("freqmark").toInt();
+    if(newFreqMark >= 300 && newFreqMark <= 5000) {
+      afskFreqMark = newFreqMark;
+      appendMonitor("AFSK Mark-Frequenz gesetzt auf " + String(afskFreqMark) + "Hz", "INFO");
+    }
+  }
+  if (server.hasArg("freqspace")) {
+    uint16_t newFreqSpace = server.arg("freqspace").toInt();
+    if(newFreqSpace >= 300 && newFreqSpace <= 5000) {
+      afskFreqSpace = newFreqSpace;
+      appendMonitor("AFSK Space-Frequenz gesetzt auf " + String(afskFreqSpace) + "Hz", "INFO");
+    }
+  }
+  if (server.hasArg("hardwaregain")) {
+    uint8_t newHardwareGain = server.arg("hardwaregain").toInt();
+    if(newHardwareGain >= 0 && newHardwareGain <= 3) {
+      setHardwareGain(newHardwareGain);
+      appendMonitor("Hardware-Verstärkung geändert", "INFO");
+    }
+  }
   
   // Process MQTT configuration (MQTT is always enabled)
   mqttEnabled = true; // MQTT is the only communication method
@@ -2290,34 +2497,58 @@ void saveCrashLog(const String& message) {
 }
 
 void loadCrashLogs() {
+  unsigned long startTime = millis();
+  
   // Load number of crash logs
   crashLogCount = ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET) << 24)
                 | ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET+1) << 16)
                 | ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET+2) << 8)
                 | ((uint32_t)EEPROM.read(CRASH_LOG_COUNT_OFFSET+3));
   
+  Serial.println("DEBUG: Raw crash log count = " + String(crashLogCount));
+  
+  // Check if crash log system was never initialized (first boot)
+  bool isFirstBoot = (crashLogCount == 0xFFFFFFFF);
+  
   // Plausibility check
-  if (crashLogCount > 10000) { // More than 10000 is unrealistic
+  if (crashLogCount > 10000 || isFirstBoot) {
+    Serial.println("DEBUG: Initializing crash log system (first boot or invalid data)");
     crashLogCount = 0;
-    appendMonitor("Crash log count corrected (was invalid)", "WARNING");
-  }
-  
-  // Load crash log entries
-  for (int i = 0; i < MAX_CRASH_LOGS; i++) {
-    int offset = CRASH_LOG_ENTRIES_OFFSET + (i * CRASH_LOG_ENTRY_SIZE);
     
-    // Load timestamp
-    for (int j = 0; j < 21; j++) {
-      crashLogs[i].timestamp[j] = EEPROM.read(offset + j);
+    // Initialize crash log entries to empty
+    for (int i = 0; i < MAX_CRASH_LOGS; i++) {
+      memset(crashLogs[i].timestamp, 0, 21);
+      memset(crashLogs[i].message, 0, 100);
     }
     
-    // Load message
-    for (int j = 0; j < 100; j++) {
-      crashLogs[i].message[j] = EEPROM.read(offset + 21 + j);
+    // Save initialized values to EEPROM
+    saveCrashLogsToEEPROM();
+    
+    if (isFirstBoot) {
+      addBootMessage("Crash log system initialized (first boot)", "INFO");
+    } else {
+      addBootMessage("Crash log count corrected (was invalid)", "WARNING");
+    }
+  } else {
+    // Load existing crash log entries (normal boot)
+    for (int i = 0; i < MAX_CRASH_LOGS; i++) {
+      int offset = CRASH_LOG_ENTRIES_OFFSET + (i * CRASH_LOG_ENTRY_SIZE);
+      
+      // Load timestamp
+      for (int j = 0; j < 21; j++) {
+        crashLogs[i].timestamp[j] = EEPROM.read(offset + j);
+      }
+      
+      // Load message
+      for (int j = 0; j < 100; j++) {
+        crashLogs[i].message[j] = EEPROM.read(offset + 21 + j);
+      }
     }
   }
   
-  appendMonitor("Crash logs loaded. Count: " + String(crashLogCount), "INFO");
+  unsigned long loadTime = millis() - startTime;
+  Serial.println("Crash logs loaded in " + String(loadTime) + "ms. Count: " + String(crashLogCount));
+  addBootMessage("Crash logs loaded (" + String(loadTime) + "ms)", "INFO");
 }
 
 void saveCrashLogsToEEPROM() {
@@ -2621,22 +2852,22 @@ bool tryConnectWiFi() {
   // Direct connection without complex protocol settings
   WiFi.begin(wifiSsid, wifiPass);
   
-  // Wait for connection (max 8 seconds, shorter intervals)
+  // Wait for connection (max 5 seconds for faster boot)
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 32) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
     delay(250);
     attempts++;
-    if(attempts % 8 == 0) {  // Alle 2 Sekunden Status
-      appendMonitor("WiFi Verbindung... (" + String(attempts/4) + "s)", "DEBUG");
+    if(attempts % 4 == 0) {  // Status update every second
+      Serial.println("WiFi Verbindung... (" + String(attempts/4) + "s)");
     }
   }
   
   bool connected = (WiFi.status() == WL_CONNECTED);
   
   if (connected) {
-    appendMonitor("WLAN erfolgreich verbunden mit " + String(wifiSsid), "INFO");
-    appendMonitor("IP-Adresse: " + WiFi.localIP().toString(), "INFO");
-    appendMonitor("RSSI: " + String(WiFi.RSSI()) + " dBm", "INFO");
+    Serial.println("WLAN erfolgreich verbunden mit " + String(wifiSsid));
+    Serial.println("IP-Adresse: " + WiFi.localIP().toString());
+    Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
     
     // Reset-Zähler zurücksetzen
     wifiReconnectAttempts = 0;
@@ -2644,8 +2875,8 @@ bool tryConnectWiFi() {
     
     return true;
   } else {
-    appendMonitor("WLAN-Verbindung fehlgeschlagen", "ERROR");
-    saveCrashLog("WiFi connect failed");
+    Serial.println("ERROR: WLAN-Verbindung fehlgeschlagen");
+    // Skip saveCrashLog during boot to avoid timeout
     return false;
   }
 }
@@ -2832,15 +3063,18 @@ void appendMonitor(const String& msg, const char* level) {
  * Sets up MQTT communication, display, and web interface
  */
 void setup() {
+  unsigned long setupStart = millis();
   Serial.begin(115200);
+  Serial.println("=== BOOT TIMING ANALYSIS ===");
+  Serial.println("Setup started at: " + String(setupStart) + "ms");
+  
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
-  // Configure I2S for MAX98357A audio output
-  setupI2SAudio();
-
   // Initialize EEPROM early for CPU frequency check
+  unsigned long eepromStart = millis();
   EEPROM.begin(EEPROM_SIZE);
+  Serial.println("EEPROM init took: " + String(millis() - eepromStart) + "ms");
   
   // Early CPU frequency check before loadConfig() to prevent bootloops
   uint8_t savedCpuFreq = EEPROM.read(CPU_FREQUENCY_OFFSET);
@@ -2858,13 +3092,39 @@ void setup() {
     ESP.restart();
   }
 
+  // Load essential config first (especially display settings)
+  unsigned long configStart = millis();
+  displayType = EEPROM.read(DISPLAYTYPE_OFFSET);
+  displayBrightness = EEPROM.read(DISPLAY_BRIGHTNESS_OFFSET);
+  Serial.println("Essential config load took: " + String(millis() - configStart) + "ms");
+  
+  // Initialize display FIRST to show boot progress immediately
+  unsigned long displayStart = millis();
+  initDisplay();
+  Serial.println("Display init took: " + String(millis() - displayStart) + "ms");
+  bootPrint("UDM-PRIG v1.0.1");
+  bootPrint("Init Display ... OK");
+  bootPrint("Init EEPROM ... OK");
+  
+  // Now load complete configuration
+  unsigned long fullConfigStart = millis();
+  bootPrint("Loading Config...");
   loadConfig();
+  Serial.println("Full config load took: " + String(millis() - fullConfigStart) + "ms");
+  bootPrint("Config loaded");
   
   // CPU-Frequenz basierend auf Konfiguration setzen
+  unsigned long cpuFreqStart = millis();
+  bootPrint("Setting CPU Freq...");
   setCpuFrequency();
+  Serial.println("CPU frequency set took: " + String(millis() - cpuFreqStart) + "ms");
   
   // Crash Logs laden
+  bootPrint("Loading Crash Logs...");
+  unsigned long crashLogStart = millis();
   loadCrashLogs();
+  Serial.println("Crash logs load took: " + String(millis() - crashLogStart) + "ms");
+  bootPrint("Crash Logs loaded");
   
   // Bei Watchdog-Reset einen Crash Log Eintrag erstellen
   esp_reset_reason_t resetReason = esp_reset_reason();
@@ -2876,21 +3136,22 @@ void setup() {
     
     saveCrashLog("System rebooted by " + reasonStr + " - Previous session ended unexpectedly");
   }
-  
-  // Initialize display based on configuration
-  initDisplay();
-  bootPrint("Init Display ... OK");
 
+  // Skip I2S setup during boot - will be initialized later
+
+  bootPrint("Init RS232 Serial...");
   if (baudrate == 0) {
     baudrate = 2400;
     appendMonitor("Baudrate war 0! Auf 2400 gesetzt.", "WARNING");
   }
   RS232.begin(baudrate, SERIAL_8N1, 16, 17);
   appendMonitor("RS232 initialisiert mit Baudrate " + String(baudrate), "INFO");
-  bootPrint("Init RS232 ... OK");
+  bootPrint("RS232 " + String(baudrate) + " OK");
 
   bootPrint("Verbinde WLAN ...");
+  unsigned long wifiStart = millis();
   bool wifiOk = tryConnectWiFi();
+  Serial.println("WiFi connect took: " + String(millis() - wifiStart) + "ms");
   if (!wifiOk) {
     bootPrint("WLAN fehlgeschlagen!");
     appendMonitor("Starte Konfigurationsportal...", "WARNING");
@@ -2908,23 +3169,27 @@ void setup() {
     if (!apActive) startConfigPortal();
   }
 
+  bootPrint("Init NTP Server...");
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   appendMonitor("NTP initialisiert (at.pool.ntp.org, Europe/Vienna)", "INFO");
-  bootPrint("Init NTP ... OK");
+  bootPrint("NTP Server OK");
 
+  bootPrint("Init mDNS...");
   if (!MDNS.begin("udmprig-client")) {
     appendMonitor("mDNS konnte nicht gestartet werden", "ERROR");
     bootPrint("mDNS ... FEHLER");
   } else {
     appendMonitor("mDNS gestartet als udmprig-client.local", "INFO");
-    bootPrint("mDNS ... OK");
+    bootPrint("mDNS OK");
   }
-  appendMonitor("Check for Firmware Updates...", "INFO");
-  checkForUpdates(); // OTA-Check!
+  // Move OTA check to background - don't block boot
+  appendMonitor("Firmware Update-Check wird im Hintergrund ausgeführt", "INFO");
+  bootPrint("OTA Check gestartet");
   
   appendMonitor("Setup abgeschlossen - Client startet normal", "INFO");
   
   // **STABILE VERSION: Hardware Watchdog aktivieren (ESP32 5.x kompatibel)**
+  bootPrint("Init Watchdog...");
   esp_task_wdt_deinit(); // Eventuellen alten Watchdog zurücksetzen
   
   esp_task_wdt_config_t wdt_config = {
@@ -2939,25 +3204,47 @@ void setup() {
     if (result == ESP_OK) {
       appendMonitor("Hardware Watchdog aktiviert (30s timeout)", "INFO");
       lastWatchdogReset = millis();
+      bootPrint("Watchdog 30s OK");
     } else {
       appendMonitor("Watchdog Task-Add fehlgeschlagen, Code: " + String(result), "WARNING");
       saveCrashLog("Watchdog task add failed: " + String(result));
+      bootPrint("Watchdog FEHLER");
     }
   } else {
     appendMonitor("Watchdog Init fehlgeschlagen, Code: " + String(result) + " - System läuft ohne Watchdog", "WARNING");
     saveCrashLog("Watchdog init failed: " + String(result));
+    bootPrint("Watchdog FEHLER");
   }
   
   // MQTT setup (always enabled in this version)
+  bootPrint("Init MQTT...");
   if(strlen(mqttBroker) > 0) {
     setupMqttTopics();
     appendMonitor("MQTT enabled - Broker: " + String(mqttBroker), "INFO");
     connectMQTT(); // Attempt initial connection
+    bootPrint("MQTT enabled");
   } else {
     appendMonitor("MQTT broker not configured - please set in web interface", "WARNING");
+    bootPrint("MQTT nicht konfiguriert");
   }
   
   delay(1000); // Brief wait after watchdog activation
+  
+  // Initialize I2S audio system at the very end to avoid slowing down critical boot
+  bootPrint("Init Audio I2S...");
+  unsigned long i2sStart = millis();
+  setupI2SAudio();
+  Serial.println("I2S audio setup took: " + String(millis() - i2sStart) + "ms");
+  bootPrint("Audio I2S bereit");
+  
+  unsigned long setupEnd = millis();
+  Serial.println("=== TOTAL SETUP TIME: " + String(setupEnd - setupStart) + "ms ===");
+  
+  // Now that the system is fully initialized, flush buffered boot messages
+  Serial.println("System fully initialized - flushing boot messages to monitor...");
+  flushBootMessages();
+  bootPrint("Flushing Messages...");
+  bootPrint("=== SYSTEM BEREIT ===");
 }
 
 // ==================================================================================
@@ -2988,6 +3275,14 @@ void loop() {
     static unsigned long lastLoopCountMeasurement = 0;
     
     loopCount++;
+    
+    // Background OTA check (only once after 30 seconds of uptime)
+    static bool otaCheckDone = false;
+    if (!otaCheckDone && millis() > 30000) {
+      appendMonitor("Performing background OTA check...", "INFO");
+      checkForUpdates();
+      otaCheckDone = true;
+    }
     
     if (lastLoopCountMeasurement == 0) {
       lastLoopCountMeasurement = now;
@@ -3144,6 +3439,12 @@ void loop() {
 
   // RS232 KISS-Protokoll Verarbeitung (saubere Nachrichtentrennung)
   if (RS232.available()) {
+    static unsigned long lastRs232Activity = 0;
+    if (millis() - lastRs232Activity > 5000) { // Debug only every 5 seconds
+      appendMonitor("RS232 Data empfangen...", "DEBUG");
+      lastRs232Activity = millis();
+    }
+    
     while (RS232.available()) {
       char c = RS232.read();
       
@@ -3191,6 +3492,13 @@ void loop() {
 
 // KISS message completely received and send via MQTT
 void processCompleteKissMessage(const String& kissData) {
+  appendMonitor("KISS Message empfangen: " + String(kissData.length()) + " bytes", "DEBUG");
+  
+  if(!isMqttConnected()) {
+    appendMonitor("MQTT nicht verbunden - KISS Message verworfen!", "WARNING");
+    return;
+  }
+  
   if(isMqttConnected()) {
     // Encode KISS data as hex string for clean JSON transmission
     String hexPayload = "";
@@ -3534,7 +3842,10 @@ String decryptPayload(const String& encryptedHexPayload) {
  * Sets up 44.1kHz sample rate with 16-bit resolution for studio-quality sound
  */
 void setupI2SAudio() {
-  // I2S configuration for MAX98357A amplifier
+  Serial.println("I2S setup starting...");
+  unsigned long i2sInternalStart = millis();
+  
+  // Optimized I2S configuration for faster boot
   i2s_config_t i2s_config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
     .sample_rate = I2S_SAMPLE_RATE,                     // 44.1kHz CD-quality
@@ -3542,9 +3853,9 @@ void setupI2SAudio() {
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,       // Mono output
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    .dma_buf_count = 4,                                 // DMA buffer count
-    .dma_buf_len = I2S_BUFFER_SIZE,                     // Buffer length
-    .use_apll = false,
+    .dma_buf_count = 2,                                 // Reduced buffer count for faster init
+    .dma_buf_len = 128,                                 // Smaller buffer for faster init
+    .use_apll = false,                                  // Disable APLL for faster boot
     .tx_desc_auto_clear = true,
     .fixed_mclk = 0
   };
@@ -3557,20 +3868,110 @@ void setupI2SAudio() {
     .data_in_num = I2S_PIN_NO_CHANGE
   };
 
-  // I2S installieren und starten
+  // I2S installieren und starten (this is the slow part)
+  unsigned long driverStart = millis();
   esp_err_t result = i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  Serial.println("I2S driver install took: " + String(millis() - driverStart) + "ms");
+  
   if (result != ESP_OK) {
     appendMonitor("I2S Driver Installation failed: " + String(result), "ERROR");
+    Serial.println("I2S driver install FAILED with code: " + String(result));
     return;
   }
   
+  unsigned long pinStart = millis();
   result = i2s_set_pin(I2S_NUM_0, &pin_config);
+  Serial.println("I2S pin setup took: " + String(millis() - pinStart) + "ms");
+  
   if (result != ESP_OK) {
     appendMonitor("I2S Pin Setup failed: " + String(result), "ERROR");
+    Serial.println("I2S pin setup FAILED with code: " + String(result));
     return;
   }
   
   appendMonitor("I2S Audio für MAX98357A initialisiert", "INFO");
+  
+  // Initialize hardware gain pin (this has delays!)
+  unsigned long gainStart = millis();
+  setupHardwareGain();
+  Serial.println("Hardware gain setup took: " + String(millis() - gainStart) + "ms");
+  
+  Serial.println("I2S setup completed in: " + String(millis() - i2sInternalStart) + "ms");
+}
+
+/**
+ * Setup and configure hardware gain control for MAX98357A
+ * Controls the GAIN pin to set hardware amplification level
+ */
+void setupHardwareGain() {
+  Serial.println("Hardware gain setup starting...");
+  unsigned long gainSetupStart = millis();
+  
+  // Apply the hardware gain setting loaded from EEPROM
+  setHardwareGain(hardwareGain);
+  Serial.println("setHardwareGain() took: " + String(millis() - gainSetupStart) + "ms");
+  
+  unsigned long monitorStart = millis();
+  // Temporarily disable appendMonitor during boot to avoid timeout
+  Serial.println("Hardware-Gain Pin (GPIO" + String(I2S_GAIN_PIN) + ") konfiguriert");
+  Serial.println("appendMonitor() took: " + String(millis() - monitorStart) + "ms");
+}
+
+/**
+ * Set hardware gain level on MAX98357A amplifier
+ * @param gainLevel: 0=9dB (floating), 1=6dB (LOW), 2=12dB (HIGH), 3=15dB (100k pulldown sim)
+ */
+void setHardwareGain(uint8_t gainLevel) {
+  String gainDesc;
+  
+  // First detach any previous LEDC setup
+  ledcDetach(I2S_GAIN_PIN);
+  
+  switch(gainLevel) {
+    case 0: // 9dB - Floating (high impedance)
+      pinMode(I2S_GAIN_PIN, INPUT);  // High impedance = floating
+      gainDesc = "9dB (Standard/Floating)";
+      break;
+      
+    case 1: // 6dB - LOW
+      pinMode(I2S_GAIN_PIN, OUTPUT);
+      digitalWrite(I2S_GAIN_PIN, LOW);
+      gainDesc = "6dB (GND)";
+      break;
+      
+    case 2: // 12dB - HIGH  
+      pinMode(I2S_GAIN_PIN, OUTPUT);
+      digitalWrite(I2S_GAIN_PIN, HIGH);
+      gainDesc = "12dB (VDD)";
+      break;
+      
+    case 3: // 15dB - 100k pulldown simulation
+      // For 15dB we need to simulate 100k pulldown to GND
+      // Use very weak pulldown or leave floating and let internal resistor handle it
+      pinMode(I2S_GAIN_PIN, INPUT_PULLDOWN);  // Use internal pulldown
+      gainDesc = "15dB (Pulldown)";
+      break;
+      
+    default:
+      gainLevel = 0;
+      pinMode(I2S_GAIN_PIN, INPUT);
+      gainDesc = "9dB (Standard - Fallback)";
+      break;
+  }
+  
+  hardwareGain = gainLevel;
+  
+  // Minimal delay for faster boot (was 10ms, now 1ms)
+  delay(1);
+  
+  // Temporarily use Serial instead of appendMonitor during boot to avoid timeout
+  Serial.println("Hardware-Verstärkung: " + gainDesc + " (GPIO" + String(I2S_GAIN_PIN) + ")");
+  
+  // Debug output only in debug mode to save time
+  if (logLevel >= 3) {
+    int pinState = digitalRead(I2S_GAIN_PIN);
+    Serial.println("DEBUG: GAIN Pin State = " + String(pinState) + " (Level " + String(gainLevel) + ")");
+  }
 }
 
 // Play audio samples via I2S
@@ -3653,7 +4054,7 @@ void playTone(int frequency, int durationUs) {
 void playAFSKBit(bool bit, bool isTx = false) {
   if (!packetAudioEnabled) return;
   
-  int frequency = bit ? FREQ_MARK : FREQ_SPACE; // 1=1200Hz (Mark), 0=2200Hz (Space)
+  int frequency = bit ? afskFreqMark : afskFreqSpace; // 1=Mark frequency, 0=Space frequency (configurable)
   playAFSKToneI2S(frequency, BIT_DURATION_US, isTx);
 }
 
@@ -3695,7 +4096,7 @@ void playPacketAudio(const String& hexData, bool isTx) {
   // - TX circuits to stabilize
   if (isTx && txDelay > 0) {
     // Play carrier tone during TX delay (authentic packet radio behavior)
-    int carrierFreq = (FREQ_MARK + FREQ_SPACE) / 2; // Carrier between mark/space
+    int carrierFreq = (afskFreqMark + afskFreqSpace) / 2; // Carrier between mark/space
     appendMonitor("TX Delay: " + String(txDelay) + "ms (carrier tone)", "DEBUG");
     playTone(carrierFreq, txDelay * 1000); // Convert ms to microseconds
   } else {
@@ -3704,8 +4105,8 @@ void playPacketAudio(const String& hexData, bool isTx) {
   }
   
   // TX/RX distinction: TX slightly lower
-  int markFreq = isTx ? (FREQ_MARK - 100) : FREQ_MARK;
-  int spaceFreq = isTx ? (FREQ_SPACE - 100) : FREQ_SPACE;
+  int markFreq = isTx ? (afskFreqMark - 100) : afskFreqMark;
+  int spaceFreq = isTx ? (afskFreqSpace - 100) : afskFreqSpace;
   
   // Präambel: ~200ms von abwechselnden Tönen für Sync
   for (int i = 0; i < 24; i++) {
