@@ -316,8 +316,7 @@ void blinkLED();
 String decodeKissFrame(String rawData);     // KISS frame decoding for debug display
 
 // OTA update system functions
-void handleOTACheck();                      // Check for firmware updates
-void handleOTAUpdate();                     // Perform firmware update
+// Manual OTA check and update functions removed - only boot update available
 
 // Web API handler functions
 void handleHardwareInfo();                  // Hardware information API
@@ -1768,7 +1767,6 @@ void handleRoot() {
               <p><strong>Temperature:</strong> <span id="temperature">-</span>°C</p>
               <p><strong>CPU Usage:</strong> <span id="cpuUsage">-</span>%</p>
               <p><strong>Display Type:</strong> <span id="displayType">-</span></p>
-              <p><strong>SSL Validation:</strong> <span id="sslValidation">-</span></p>
             </div>
           </div>
           
@@ -1810,18 +1808,17 @@ void handleRoot() {
         </div>
       </div>
       
-      <!-- Firmware Update Section -->
+      <!-- Firmware Info Section (Updates erfolgen automatisch beim Boot) -->
       <div class="card">
         <div class="card-content">
-          <span class="card-title"><i class="material-icons left">system_update</i>Firmware Update</span>
+          <span class="card-title"><i class="material-icons left">info</i>Firmware Info</span>
           <p><strong>Aktuelle Version:</strong> )=====";
   html += String(localVersion);
   html += R"=====(</p>
           <p><strong>OTA Repository:</strong><br><small>)=====";
   html += String(otaRepoUrl);
   html += R"=====(</small></p>
-          <button class="btn blue" onclick="checkOTAUpdate()">Nach Updates suchen</button>
-          <div id="otaStatus" style="margin-top: 10px;"></div>
+          <p class="grey-text"><i class="material-icons tiny">info</i> Updates werden automatisch beim Boot geprüft und installiert</p>
         </div>
       </div>
       
@@ -2152,33 +2149,7 @@ void handleRoot() {
           });
         });
       });
-      
-      window.checkOTAUpdate = function() {
-        $('#otaStatus').html('<div class="progress"><div class="indeterminate"></div></div>');
-        
-        $.get('/ota-check', function(data) {
-          if (data.updateAvailable) {
-            $('#otaStatus').html('<p class="green-text">Update verfügbar: Version ' + data.remoteVersion + '</p><button class="btn orange" onclick="startOTAUpdate()">Update installieren</button>');
-          } else {
-            $('#otaStatus').html('<p class="grey-text">Firmware ist aktuell (Version ' + data.localVersion + ')</p>');
-          }
-        }).fail(function() {
-          $('#otaStatus').html('<p class="red-text">Fehler beim Prüfen auf Updates</p>');
-        });
-      };
-      
-      window.startOTAUpdate = function() {
-        $('#otaStatus').html('<div class="progress"><div class="indeterminate"></div></div><p>Firmware wird aktualisiert... Bitte warten!</p>');
-        
-        $.post('/ota-update', function(data) {
-          $('#otaStatus').html('<p class="green-text">Update erfolgreich! ESP32 startet neu...</p>');
-          setTimeout(function() {
-            window.location.reload();
-          }, 5000);
-        }).fail(function() {
-          $('#otaStatus').html('<p class="red-text">Update fehlgeschlagen!</p>');
-        });
-      };
+
     </script>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
   </body>
@@ -2887,8 +2858,7 @@ void startWebserver() {
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/clearcrashlogs", HTTP_POST, handleClearCrashLogs);
   server.on("/api/display_brightness", HTTP_POST, handleDisplayBrightness); // Live Display-Helligkeit
-  server.on("/ota-check", handleOTACheck);
-  server.on("/ota-update", HTTP_POST, handleOTAUpdate);
+  // Manual OTA update removed - only boot update available
   server.begin();
 }
 
@@ -2928,6 +2898,11 @@ void checkForUpdates() {
     appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
     if(remoteVersion != String(localVersion)) {
       appendMonitor("OTA: Neue Version gefunden (" + remoteVersion + "), Update wird geladen!", "INFO");
+      
+      // Disable watchdog during firmware update to prevent timeout
+      esp_task_wdt_deinit();
+      appendMonitor("OTA: Watchdog deaktiviert für Firmware-Update", "INFO");
+      
       showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
 
       http.end();
@@ -3649,136 +3624,7 @@ void processMqttMessage(const String& message) {
   }
 }
 
-// OTA check function - checks for available updates
-void handleOTACheck() {
-  appendMonitor("OTA: Checking for updates...", "INFO");
-  
-  HTTPClient http;
-  configureHTTPClient(http, String(otaRepoUrl) + "/version.txt");
-  
-  int httpResponseCode = http.GET();
-  
-  if (httpResponseCode == 200) {
-    String remoteVersion = http.getString();
-    remoteVersion.trim();
-    
-    appendMonitor("OTA: Remote version: " + remoteVersion + ", Local version: " + String(localVersion), "INFO");
-    
-    bool updateAvailable = (remoteVersion != String(localVersion));
-    
-    String response = "{\"updateAvailable\":" + String(updateAvailable ? "true" : "false") + 
-                      ",\"remoteVersion\":\"" + remoteVersion + 
-                      "\",\"localVersion\":\"" + String(localVersion) + "\"}";
-    
-    server.send(200, "application/json", response);
-  } else {
-    appendMonitor("OTA: Failed to check version. HTTP code: " + String(httpResponseCode), "ERROR");
-    server.send(500, "application/json", "{\"error\":\"Failed to check version\"}");
-  }
-  
-  http.end();
-}
-
-// OTA update function - performs firmware update
-void handleOTAUpdate() {
-  appendMonitor("OTA: Starting firmware update...", "INFO");
-  
-  // First check if update is available
-  HTTPClient http;
-  
-  configureHTTPClient(http, String(otaRepoUrl) + "/version.txt");
-  // **OTA UPDATE HTTP TIMEOUTS** - override default timeouts
-  http.setTimeout(30000); // 30 seconds for OTA update (longer due to download)
-  http.setConnectTimeout(5000); // 5 seconds connect timeout
-  
-  int httpResponseCode = http.GET();
-  
-  if (httpResponseCode != 200) {
-    appendMonitor("OTA: Cannot verify version. Update aborted.", "ERROR");
-    server.send(500, "application/json", "{\"error\":\"Cannot verify version\"}");
-    http.end();
-    return;
-  }
-  
-  String remoteVersion = http.getString();
-  remoteVersion.trim();
-  http.end();
-  
-  if (remoteVersion == String(localVersion)) {
-    appendMonitor("OTA: No update needed. Versions match.", "INFO");
-    server.send(200, "application/json", "{\"result\":\"No update needed\"}");
-    return;
-  }
-  
-  appendMonitor("OTA: Downloading firmware version " + remoteVersion, "INFO");
-  
-  // Use the same working update method as checkForUpdates()
-  String firmwareUrl = String(otaRepoUrl) + "/udm-prig-client.ino.bin";
-  
-  configureHTTPClient(http, firmwareUrl);
-  int resp = http.GET();
-  
-  if (resp == 200) {
-    int contentLength = http.getSize();
-    if (contentLength > 0) {
-      WiFiClient * stream = http.getStreamPtr();
-      bool canBegin = Update.begin(contentLength);
-      
-      if (canBegin) {
-        appendMonitor("OTA: Starting download (" + String(contentLength) + " bytes)...", "INFO");
-        
-        uint8_t buff[512];
-        int totalRead = 0;
-        
-        while (http.connected() && totalRead < contentLength) {
-          size_t avail = stream->available();
-          if (avail) {
-            int read = stream->readBytes(buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
-            Update.write(buff, read);
-            totalRead += read;
-            
-            // Progress feedback every 10%
-            static int lastPercent = -1;
-            int percent = (totalRead * 100) / contentLength;
-            if (percent != lastPercent && percent % 10 == 0) {
-              appendMonitor("OTA: Progress " + String(percent) + "%", "INFO");
-              lastPercent = percent;
-            }
-          }
-          yield();
-        }
-        
-        if (Update.end(true)) {
-          appendMonitor("OTA: Update successful! Restarting...", "INFO");
-          server.send(200, "application/json", "{\"result\":\"Update successful\"}");
-          
-          // Save new version to EEPROM
-          strncpy(localVersion, remoteVersion.c_str(), 15);
-          localVersion[15] = 0;
-          saveConfig();
-          appendMonitor("New version saved: " + String(localVersion), "INFO");
-          
-          delay(1000); // Give time for response to be sent
-          ESP.restart();
-        } else {
-          appendMonitor("OTA: Update failed during finalization. Error: " + String(Update.getError()), "ERROR");
-          server.send(500, "application/json", "{\"error\":\"Update finalization failed\"}");
-        }
-      } else {
-        appendMonitor("OTA: Cannot begin update - not enough space?", "ERROR");
-        server.send(500, "application/json", "{\"error\":\"Cannot begin update\"}");
-      }
-    } else {
-      appendMonitor("OTA: Empty firmware file", "ERROR");
-      server.send(500, "application/json", "{\"error\":\"Empty firmware file\"}");
-    }
-  } else {
-    appendMonitor("OTA: Firmware download failed. HTTP code: " + String(resp), "ERROR");
-    server.send(500, "application/json", "{\"error\":\"Firmware download failed\"}");
-  }
-  
-  http.end();
-}
+// Manual OTA check and update functions removed - only boot update available
 
 // LED blink function for status display
 void blinkLED() {
