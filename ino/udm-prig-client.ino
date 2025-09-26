@@ -216,7 +216,7 @@ uint16_t txDelay = 100;                 // TX Delay in milliseconds (PTT to data
 uint8_t audioVolume = 70;               // Audio volume level 0-100% (default: 70%)
 uint16_t afskFreqMark = 1200;           // AFSK Mark frequency (configurable, default: 1200 Hz)
 uint16_t afskFreqSpace = 2200;          // AFSK Space frequency (configurable, default: 2200 Hz)
-uint8_t hardwareGain = 0;               // Hardware gain level (0=9dB, 1=6dB, 2=12dB, 3=15dB)
+uint8_t hardwareGain = 0;               // Hardware gain level (0=9dB Standard, 1=6dB Niedrig, 2=12dB Hoch)
 
 // ==================================================================================
 // MQTT CLIENT OBJECTS
@@ -1044,7 +1044,7 @@ void loadConfig() {
   hardwareGain = EEPROM.read(HARDWARE_GAIN_OFFSET);
   Serial.println("  hardwareGain  = " + String(hardwareGain) + " (Offset " + String(HARDWARE_GAIN_OFFSET) + ")");
   
-  if (hardwareGain > 3 || hardwareGain == 0xFF) {
+  if (hardwareGain > 2 || hardwareGain == 0xFF) {
     hardwareGain = 0; // Default to 9dB if invalid
     addBootMessage("Hardware-Verstärkung war ungültig (" + String(hardwareGain) + "), auf 9dB gesetzt", "WARNING");
     configChanged = true;
@@ -1252,7 +1252,7 @@ bool isMqttConnected() {
   // Log connection state changes
   if (connected != lastState || (millis() - lastLog > 30000)) {
     if (connected) {
-      appendMonitor("MQTT Status: VERBUNDEN (" + String(mqttBroker) + ")", "INFO");
+      //appendMonitor("MQTT Status: VERBUNDEN (" + String(mqttBroker) + ")", "INFO");
     } else {
       appendMonitor("MQTT Status: NICHT VERBUNDEN (Broker: " + String(mqttBroker) + ")", "WARNING");
     }
@@ -1497,18 +1497,15 @@ void handleRoot() {
             </div>
             <div class="input-field custom-row">
               <select id="hardwaregain" name="hardwaregain">
+                <option value="1")=====";
+  if(hardwareGain == 1) html += " selected";
+  html += R"=====(>6dB (Niedrig)</option>
                 <option value="0")=====";
   if(hardwareGain == 0) html += " selected";
   html += R"=====(>9dB (Standard)</option>
-                <option value="1")=====";
-  if(hardwareGain == 1) html += " selected";
-  html += R"=====(>6dB (Leiser)</option>
                 <option value="2")=====";
   if(hardwareGain == 2) html += " selected";
-  html += R"=====(>12dB (Lauter)</option>
-                <option value="3")=====";
-  if(hardwareGain == 3) html += " selected";
-  html += R"=====(>15dB (Maximum)</option>
+  html += R"=====(>12dB (Hoch)</option>
               </select>
               <label for="hardwaregain">Hardware-Verstärkung</label>
               <span class="helper-text">Hardware-Gain am MAX98357A (GPIO33). Zusätzlich zur Software-Lautstärke!</span>
@@ -2919,7 +2916,7 @@ void checkForUpdates() {
   
   // GitHub OTA URLs verwenden (unabhängig von serverUrl)
   String urlVersion = String(otaRepoUrl) + "/version.txt";
-  String urlFirmware = String(otaRepoUrl) + "/udm-prig-client.ino.esp32.bin";
+  String urlFirmware = String(otaRepoUrl) + "/udm-prig-client.ino.bin";
 
   appendMonitor("OTA: Prüfe auf neue Firmware unter " + urlVersion, "INFO");
   HTTPClient http;
@@ -3102,7 +3099,7 @@ void setup() {
   unsigned long displayStart = millis();
   initDisplay();
   Serial.println("Display init took: " + String(millis() - displayStart) + "ms");
-  bootPrint("UDM-PRIG v1.0.1");
+  bootPrint("UDM-PRIG booting...");
   bootPrint("Init Display ... OK");
   bootPrint("Init EEPROM ... OK");
   
@@ -3919,7 +3916,7 @@ void setupHardwareGain() {
 
 /**
  * Set hardware gain level on MAX98357A amplifier
- * @param gainLevel: 0=9dB (floating), 1=6dB (LOW), 2=12dB (HIGH), 3=15dB (100k pulldown sim)
+ * @param gainLevel: 0=9dB (floating), 1=6dB (Vin), 2=12dB (GND)
  */
 void setHardwareGain(uint8_t gainLevel) {
   String gainDesc;
@@ -3928,28 +3925,21 @@ void setHardwareGain(uint8_t gainLevel) {
   ledcDetach(I2S_GAIN_PIN);
   
   switch(gainLevel) {
-    case 0: // 9dB - Floating (high impedance)
+    case 0: // 9dB - Floating (high impedance) - Standard
       pinMode(I2S_GAIN_PIN, INPUT);  // High impedance = floating
-      gainDesc = "9dB (Standard/Floating)";
+      gainDesc = "9dB (Standard)";
       break;
       
-    case 1: // 6dB - LOW
-      pinMode(I2S_GAIN_PIN, OUTPUT);
-      digitalWrite(I2S_GAIN_PIN, LOW);
-      gainDesc = "6dB (GND)";
-      break;
-      
-    case 2: // 12dB - HIGH  
+    case 1: // 6dB - HIGH (connect to Vin)
       pinMode(I2S_GAIN_PIN, OUTPUT);
       digitalWrite(I2S_GAIN_PIN, HIGH);
-      gainDesc = "12dB (VDD)";
+      gainDesc = "6dB (Niedrig)";
       break;
       
-    case 3: // 15dB - 100k pulldown simulation
-      // For 15dB we need to simulate 100k pulldown to GND
-      // Use very weak pulldown or leave floating and let internal resistor handle it
-      pinMode(I2S_GAIN_PIN, INPUT_PULLDOWN);  // Use internal pulldown
-      gainDesc = "15dB (Pulldown)";
+    case 2: // 12dB - LOW (connect to GND)
+      pinMode(I2S_GAIN_PIN, OUTPUT);
+      digitalWrite(I2S_GAIN_PIN, LOW);
+      gainDesc = "12dB (Hoch)";
       break;
       
     default:
@@ -4013,9 +4003,9 @@ void playAFSKToneI2S(int frequency, int durationUs, bool isTx = false) {
     currentPhase += phaseIncrement;
     if (currentPhase >= 2.0 * PI) currentPhase -= 2.0 * PI;
     
-    // Sine to 16-bit sample with volume control
+    // Sine to 16-bit sample with volume control (scaled to 50% max)
     float sineValue = sin(currentPhase);
-    int16_t amplitude = (int16_t)(30000 * audioVolume / 100); // Volume 0-100%
+    int16_t amplitude = (int16_t)(30000 * audioVolume * 50 / 10000); // Volume 0-100% scaled to 50% max
     samples[i] = (int16_t)(sineValue * amplitude);
   }
   
@@ -4040,9 +4030,9 @@ void playTone(int frequency, int durationUs) {
   int samplesPerHalfCycle = I2S_SAMPLE_RATE / (2 * frequency);
   
   for (int i = 0; i < sampleCount; i++) {
-    // Rechteck-Signal für Sync mit Lautstärke-Kontrolle
+    // Rechteck-Signal für Sync mit Lautstärke-Kontrolle (scaled to 50% max)
     bool high = ((i / samplesPerHalfCycle) % 2) == 0;
-    int16_t amplitude = (int16_t)(20000 * audioVolume / 100); // Lautstärke 0-100%
+    int16_t amplitude = (int16_t)(20000 * audioVolume * 50 / 10000); // Lautstärke 0-100% scaled to 50% max
     samples[i] = high ? amplitude : -amplitude;
   }
   
