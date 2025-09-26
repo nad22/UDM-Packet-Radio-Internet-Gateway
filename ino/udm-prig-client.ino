@@ -3713,7 +3713,7 @@ void handleOTAUpdate() {
   appendMonitor("OTA: Downloading firmware version " + remoteVersion, "INFO");
   
   // Use the same working update method as checkForUpdates()
-  String firmwareUrl = String(otaRepoUrl) + "/udm-prig-client.ino.esp32.bin";
+  String firmwareUrl = String(otaRepoUrl) + "/udm-prig-client.ino.bin";
   
   configureHTTPClient(http, firmwareUrl);
   int resp = http.GET();
