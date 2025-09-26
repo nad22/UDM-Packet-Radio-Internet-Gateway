@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)
+![Version](https://img.shields.io/badge/version-2.1.3-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-ESP32-red.svg)
 ![Protocol](https://img.shields.io/badge/protocol-MQTT%20%7C%20AFSK%20%7C%20KISS-orange.svg)
