@@ -3712,37 +3712,72 @@ void handleOTAUpdate() {
   
   appendMonitor("OTA: Downloading firmware version " + remoteVersion, "INFO");
   
-  // Firmware-URL
+  // Use the same working update method as checkForUpdates()
   String firmwareUrl = String(otaRepoUrl) + "/udm-prig-client.ino.esp32.bin";
   
-  httpUpdate.setLedPin(LED_PIN, LOW);
+  configureHTTPClient(http, firmwareUrl);
+  int resp = http.GET();
   
-  // WiFiClient für neue HTTPUpdate API verwenden
-  WiFiClient client;
-  t_httpUpdate_return ret = httpUpdate.update(client, firmwareUrl);
-  
-  switch (ret) {
-    case HTTP_UPDATE_FAILED:
-      appendMonitor("OTA: Update failed. Error: " + httpUpdate.getLastErrorString(), "ERROR");
-      server.send(500, "application/json", "{\"error\":\"Update failed\"}");
-      break;
+  if (resp == 200) {
+    int contentLength = http.getSize();
+    if (contentLength > 0) {
+      WiFiClient * stream = http.getStreamPtr();
+      bool canBegin = Update.begin(contentLength);
       
-    case HTTP_UPDATE_NO_UPDATES:
-      appendMonitor("OTA: No updates available", "INFO");
-      server.send(200, "application/json", "{\"result\":\"No updates\"}");
-      break;
-      
-    case HTTP_UPDATE_OK:
-      appendMonitor("OTA: Update successful! Restarting...", "INFO");
-      server.send(200, "application/json", "{\"result\":\"Update successful\"}");
-      // Speichere neue Version im EEPROM
-      strncpy(localVersion, remoteVersion.c_str(), 15);
-      localVersion[15] = 0;
-      saveConfig();
-      appendMonitor("Neue Version gespeichert: " + String(localVersion), "INFO");
-      ESP.restart();
-      break;
+      if (canBegin) {
+        appendMonitor("OTA: Starting download (" + String(contentLength) + " bytes)...", "INFO");
+        
+        uint8_t buff[512];
+        int totalRead = 0;
+        
+        while (http.connected() && totalRead < contentLength) {
+          size_t avail = stream->available();
+          if (avail) {
+            int read = stream->readBytes(buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
+            Update.write(buff, read);
+            totalRead += read;
+            
+            // Progress feedback every 10%
+            static int lastPercent = -1;
+            int percent = (totalRead * 100) / contentLength;
+            if (percent != lastPercent && percent % 10 == 0) {
+              appendMonitor("OTA: Progress " + String(percent) + "%", "INFO");
+              lastPercent = percent;
+            }
+          }
+          yield();
+        }
+        
+        if (Update.end(true)) {
+          appendMonitor("OTA: Update successful! Restarting...", "INFO");
+          server.send(200, "application/json", "{\"result\":\"Update successful\"}");
+          
+          // Save new version to EEPROM
+          strncpy(localVersion, remoteVersion.c_str(), 15);
+          localVersion[15] = 0;
+          saveConfig();
+          appendMonitor("New version saved: " + String(localVersion), "INFO");
+          
+          delay(1000); // Give time for response to be sent
+          ESP.restart();
+        } else {
+          appendMonitor("OTA: Update failed during finalization. Error: " + String(Update.getError()), "ERROR");
+          server.send(500, "application/json", "{\"error\":\"Update finalization failed\"}");
+        }
+      } else {
+        appendMonitor("OTA: Cannot begin update - not enough space?", "ERROR");
+        server.send(500, "application/json", "{\"error\":\"Cannot begin update\"}");
+      }
+    } else {
+      appendMonitor("OTA: Empty firmware file", "ERROR");
+      server.send(500, "application/json", "{\"error\":\"Empty firmware file\"}");
+    }
+  } else {
+    appendMonitor("OTA: Firmware download failed. HTTP code: " + String(resp), "ERROR");
+    server.send(500, "application/json", "{\"error\":\"Firmware download failed\"}");
   }
+  
+  http.end();
 }
 
 // LED blink function for status display
