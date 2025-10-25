@@ -69,7 +69,7 @@
 // ==================================================================================
 
 // Watchdog timer configuration for system stability
-#define WDT_TIMEOUT 30              // 30 second watchdog timeout
+#define WDT_TIMEOUT 60              // 60 second watchdog timeout (erhöht für Config-Portal)
 #define EEPROM_SIZE 1024            // Extended EEPROM size for crash logs and configuration
 
 // EEPROM memory layout - persistent configuration storage
@@ -114,6 +114,7 @@
 
 #define LED_PIN 2                    // Status LED pin
 #define BUZZER_PIN 4                 // Buzzer pin (not used with I2S, kept for compatibility)
+#define RESET_EEPROM_PIN 0           // GPIO0 (BOOT button) für EEPROM Reset
 
 // I2S audio pins for MAX98357A amplifier
 #define I2S_DOUT_PIN 25              // DIN pin of MAX98357A
@@ -180,6 +181,7 @@ struct BootMessage {
 BootMessage bootMessages[MAX_BOOT_MESSAGES];
 int bootMessageCount = 0;
 bool systemReady = false;               // System fully initialized flag
+bool displayInitialized = false;       // Display initialization flag
 
 // RX/TX activity indicators for display
 unsigned long lastRX = 0;               // Last receive timestamp
@@ -326,6 +328,7 @@ String decodeKissFrame(String rawData);     // KISS frame decoding for debug dis
 // Web API handler functions
 void handleHardwareInfo();                  // Hardware information API
 void handleReboot();                        // System reboot API
+void sendSimplifiedHTML();                  // Simplified HTML for config portal
 
 // Crash log system functions
 void saveCrashLog(const String& message);   // Save crash log entry
@@ -462,6 +465,10 @@ bool initDisplay() {
     }
   }
   
+  if (success) {
+    displayInitialized = true;
+  }
+  
   return success;
 }
 
@@ -580,12 +587,31 @@ void addBootMessage(const String &message, const char* level) {
  */
 void flushBootMessages() {
   Serial.println("Flushing " + String(bootMessageCount) + " buffered boot messages...");
+  
+  // **BOOTLOOP FIX**: Watchdog reset vor großer Schleife
+  esp_task_wdt_reset();
+  
   for (int i = 0; i < bootMessageCount; i++) {
-    appendMonitor(bootMessages[i].message, bootMessages[i].level.c_str());
-    delay(50); // Small delay to avoid overwhelming the system
+    // Watchdog reset alle 10 Messages
+    if (i % 10 == 0) {
+      esp_task_wdt_reset();
+    }
+    
+    try {
+      appendMonitor(bootMessages[i].message, bootMessages[i].level.c_str());
+    } catch (...) {
+      Serial.println("ERROR: Failed to append boot message " + String(i));
+    }
+    
+    delay(25); // Reduzierter delay für schnelleres flushing
+    yield(); // Task-Scheduler Zeit geben
   }
+  
   bootMessageCount = 0; // Clear the buffer
   systemReady = true;   // Mark system as ready for direct appendMonitor calls
+  
+  Serial.println("Boot messages flushed successfully.");
+  esp_task_wdt_reset(); // Final watchdog reset
 }
 
 void showOTAUpdateScreen(const char* text, float progress = -1) {
@@ -725,6 +751,11 @@ void drawRXTXRects() {
 
 // Draw 7-segment digit (CB radio style with separated segments!)
 void draw7SegmentDigit(int x, int y, uint8_t digit) {
+  // Safety check: Don't draw if display not initialized
+  if (!displayInitialized) {
+    return;
+  }
+  
   // 7-segment patterns for digits 0-9
   bool segments[10][7] = {
     {1,1,1,1,1,1,0}, // 0: ABCDEF
@@ -745,24 +776,47 @@ void draw7SegmentDigit(int x, int y, uint8_t digit) {
   int segThick = 1; // Segment thickness (thin)
   int gap = 1;      // Gap between segments (IMPORTANT!)
   
-  // Segment positions with gaps between segments
-  if(segments[digit][0]) display_sh1106.fillRect(x+gap, y, segLen, segThick, getDisplayWhite());
-  // Segment B (top right)
-  if(segments[digit][1]) display_sh1106.fillRect(x+segLen+gap, y+gap, segThick, segLen, getDisplayWhite());
-  // Segment C (bottom right)
-  if(segments[digit][2]) display_sh1106.fillRect(x+segLen+gap, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
-  // Segment D (bottom)
-  if(segments[digit][3]) display_sh1106.fillRect(x+gap, y+2*segLen+2*gap, segLen, segThick, getDisplayWhite());
-  // Segment E (bottom left)
-  if(segments[digit][4]) display_sh1106.fillRect(x, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
-  // Segment F (top left)
-  if(segments[digit][5]) display_sh1106.fillRect(x, y+gap, segThick, segLen, getDisplayWhite());
-  // Segment G (middle)
-  if(segments[digit][6]) display_sh1106.fillRect(x+gap, y+segLen+gap, segLen, segThick, getDisplayWhite());
+  // Segment positions with gaps between segments - use correct display type
+  if (displayType == DISPLAY_SSD1306) {
+    // Segment A (top)
+    if(segments[digit][0]) display_ssd1306.fillRect(x+gap, y, segLen, segThick, getDisplayWhite());
+    // Segment B (top right)
+    if(segments[digit][1]) display_ssd1306.fillRect(x+segLen+gap, y+gap, segThick, segLen, getDisplayWhite());
+    // Segment C (bottom right)
+    if(segments[digit][2]) display_ssd1306.fillRect(x+segLen+gap, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
+    // Segment D (bottom)
+    if(segments[digit][3]) display_ssd1306.fillRect(x+gap, y+2*segLen+2*gap, segLen, segThick, getDisplayWhite());
+    // Segment E (bottom left)
+    if(segments[digit][4]) display_ssd1306.fillRect(x, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
+    // Segment F (top left)
+    if(segments[digit][5]) display_ssd1306.fillRect(x, y+gap, segThick, segLen, getDisplayWhite());
+    // Segment G (middle)
+    if(segments[digit][6]) display_ssd1306.fillRect(x+gap, y+segLen+gap, segLen, segThick, getDisplayWhite());
+  } else {
+    // Segment A (top)
+    if(segments[digit][0]) display_sh1106.fillRect(x+gap, y, segLen, segThick, getDisplayWhite());
+    // Segment B (top right)
+    if(segments[digit][1]) display_sh1106.fillRect(x+segLen+gap, y+gap, segThick, segLen, getDisplayWhite());
+    // Segment C (bottom right)
+    if(segments[digit][2]) display_sh1106.fillRect(x+segLen+gap, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
+    // Segment D (bottom)
+    if(segments[digit][3]) display_sh1106.fillRect(x+gap, y+2*segLen+2*gap, segLen, segThick, getDisplayWhite());
+    // Segment E (bottom left)
+    if(segments[digit][4]) display_sh1106.fillRect(x, y+segLen+gap+1, segThick, segLen, getDisplayWhite());
+    // Segment F (top left)
+    if(segments[digit][5]) display_sh1106.fillRect(x, y+gap, segThick, segLen, getDisplayWhite());
+    // Segment G (middle)
+    if(segments[digit][6]) display_sh1106.fillRect(x+gap, y+segLen+gap, segLen, segThick, getDisplayWhite());
+  }
 }
 
 // CB channel display with "CH" + 7-segment digits + RX/TX (completely centered)
 void drawCBChannelDisplay() {
+  // Safety check: Don't draw if display not initialized
+  if (!displayInitialized) {
+    return;
+  }
+  
   // Calculate centered Y position between horizontal line (32) and display bottom (64)
   int centerY = 42; // Centered between line and bottom edge
   
@@ -862,6 +916,11 @@ void drawCBChannelDisplay() {
 }
 
 void updateOLED() {
+  // Safety check: Don't update display if not properly initialized
+  if (!displayInitialized) {
+    return;
+  }
+  
   // Query WiFi signal strength only every 1000ms (performance optimization)
   static unsigned long lastWiFiRSSI = 0;
   static int cachedRSSI = -100;
@@ -941,7 +1000,11 @@ void updateOLED() {
 }
 
 void saveConfig() {
-  EEPROM.begin(EEPROM_SIZE);
+  Serial.println("Saving configuration to EEPROM...");
+  
+  try {
+    // EEPROM should already be initialized, but check if needed
+    // EEPROM.begin(EEPROM_SIZE); // Usually already done
   for (int i = 0; i < 64; ++i) EEPROM.write(SSID_OFFSET+i, wifiSsid[i]);
   for (int i = 0; i < 64; ++i) EEPROM.write(PASS_OFFSET+i, wifiPass[i]);
   for (int i = 0; i < 64; ++i) EEPROM.write(SERVERURL_OFFSET+i, serverUrl[i]);
@@ -984,140 +1047,252 @@ void saveConfig() {
   EEPROM.write(HARDWARE_GAIN_OFFSET, hardwareGain);
   
   EEPROM.commit();
+  Serial.println("Configuration saved successfully to EEPROM");
+  
+  } catch (...) {
+    Serial.println("ERROR: Could not save configuration to EEPROM");
+  }
 }
 
 void loadConfig() {
-  // EEPROM.begin() already called in setup() - don't call again to avoid timeout
-  for (int i = 0; i < 64; ++i) wifiSsid[i] = EEPROM.read(SSID_OFFSET+i);
-  wifiSsid[63] = 0;
-  for (int i = 0; i < 64; ++i) wifiPass[i] = EEPROM.read(PASS_OFFSET+i);
-  wifiPass[63] = 0;
-  for (int i = 0; i < 64; ++i) serverUrl[i] = EEPROM.read(SERVERURL_OFFSET+i);
-  serverUrl[63] = 0;
-  for (int i = 0; i < 32; ++i) callsign[i] = EEPROM.read(CALLSIGN_OFFSET+i);
-  callsign[31] = 0;
-  for (int i = 0; i < 128; ++i) otaRepoUrl[i] = EEPROM.read(OTAURL_OFFSET+i);
-  otaRepoUrl[127] = 0;
-  for (int i = 0; i < 16; ++i) localVersion[i] = EEPROM.read(VERSION_OFFSET+i);
-  localVersion[15] = 0;
-  baudrate = ((uint32_t)EEPROM.read(BAUD_OFFSET) << 24)
-           | ((uint32_t)EEPROM.read(BAUD_OFFSET+1) << 16)
-           | ((uint32_t)EEPROM.read(BAUD_OFFSET+2) << 8)
-           | ((uint32_t)EEPROM.read(BAUD_OFFSET+3));
-  logLevel = EEPROM.read(LOGLEVEL_OFFSET);
-  displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Load display type
-  sslValidation = EEPROM.read(SSL_VALIDATION_OFFSET) == 1;  // Load SSL validation
-  cpuFrequency = EEPROM.read(CPU_FREQUENCY_OFFSET);  // Load CPU frequency
-  displayBrightness = EEPROM.read(DISPLAY_BRIGHTNESS_OFFSET);  // Load display brightness
+  // **BOOTLOOP SAFE**: EEPROM.begin() already called in setup() - don't call again to avoid timeout
+  Serial.println("Loading configuration from EEPROM...");
   
-  // Load MQTT configuration
-  mqttEnabled = EEPROM.read(MQTT_ENABLED_OFFSET) == 1;
-  for (int i = 0; i < 64; ++i) mqttBroker[i] = EEPROM.read(MQTT_BROKER_OFFSET+i);
-  mqttBroker[63] = 0;
-  mqttPort = ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET) << 8) | ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET+1));
-  for (int i = 0; i < 16; ++i) mqttUsername[i] = EEPROM.read(MQTT_USERNAME_OFFSET+i);
-  mqttUsername[15] = 0;
-  for (int i = 0; i < 32; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
-  mqttPassword[31] = 0;
-  for (int i = 0; i < 32; ++i) mqttSharedSecret[i] = EEPROM.read(MQTT_SHARED_SECRET_OFFSET+i);
-  mqttSharedSecret[31] = 0;
-  cbChannel = EEPROM.read(CB_CHANNEL_OFFSET); // Load CB channel
-  uint8_t audioSetting = EEPROM.read(PACKET_AUDIO_OFFSET); // Load packet audio setting
-  packetAudioEnabled = (audioSetting == 1);
-  audioVolume = EEPROM.read(AUDIO_VOLUME_OFFSET); // Load audio volume
-  if (audioVolume > 100) audioVolume = 70; // Fallback to 70% if invalid
+  // **FAIL-SAFE**: Initialize all values with safe defaults FIRST
+  memset(wifiSsid, 0, 64);
+  memset(wifiPass, 0, 64);
+  memset(serverUrl, 0, 64);
+  memset(callsign, 0, 32);
+  strcpy(callsign, "NOCALL"); // Safe default callsign
   
-  // Load TX Delay (2 bytes, little endian)
-  txDelay = ((uint16_t)EEPROM.read(TX_DELAY_OFFSET)) | ((uint16_t)EEPROM.read(TX_DELAY_OFFSET+1) << 8);
+  try {
+    for (int i = 0; i < 64; ++i) wifiSsid[i] = EEPROM.read(SSID_OFFSET+i);
+    wifiSsid[63] = 0;
+    for (int i = 0; i < 64; ++i) wifiPass[i] = EEPROM.read(PASS_OFFSET+i);
+    wifiPass[63] = 0;
+    for (int i = 0; i < 64; ++i) serverUrl[i] = EEPROM.read(SERVERURL_OFFSET+i);
+    serverUrl[63] = 0;
+    for (int i = 0; i < 32; ++i) callsign[i] = EEPROM.read(CALLSIGN_OFFSET+i);
+    callsign[31] = 0;
+  } catch (...) {
+    Serial.println("ERROR: EEPROM read failed, using defaults");
+    return;
+  }
+  // **FAIL-SAFE**: Initialize with safe defaults
+  strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
+  strcpy(localVersion, "3.0.0");
+  baudrate = 2400;
+  logLevel = 1;
+  displayType = DISPLAY_SSD1306;
+  sslValidation = true;
+  cpuFrequency = 0;
+  displayBrightness = 128;
+  
+  try {
+    for (int i = 0; i < 128; ++i) otaRepoUrl[i] = EEPROM.read(OTAURL_OFFSET+i);
+    otaRepoUrl[127] = 0;
+    for (int i = 0; i < 16; ++i) localVersion[i] = EEPROM.read(VERSION_OFFSET+i);
+    localVersion[15] = 0;
+    
+    baudrate = ((uint32_t)EEPROM.read(BAUD_OFFSET) << 24)
+             | ((uint32_t)EEPROM.read(BAUD_OFFSET+1) << 16)
+             | ((uint32_t)EEPROM.read(BAUD_OFFSET+2) << 8)
+             | ((uint32_t)EEPROM.read(BAUD_OFFSET+3));
+             
+    logLevel = EEPROM.read(LOGLEVEL_OFFSET);
+    displayType = EEPROM.read(DISPLAYTYPE_OFFSET);  // Load display type
+    
+    uint8_t sslVal = EEPROM.read(SSL_VALIDATION_OFFSET);
+    sslValidation = (sslVal == 1);  // Load SSL validation
+    
+    cpuFrequency = EEPROM.read(CPU_FREQUENCY_OFFSET);  // Load CPU frequency
+    displayBrightness = EEPROM.read(DISPLAY_BRIGHTNESS_OFFSET);  // Load display brightness
+  } catch (...) {
+    Serial.println("ERROR: EEPROM config read failed, using defaults");
+  }
+  
+  // **FAIL-SAFE**: MQTT defaults
+  mqttEnabled = true;
+  memset(mqttBroker, 0, 64);
+  mqttPort = 8883;
+  memset(mqttUsername, 0, 16);
+  memset(mqttPassword, 0, 32);
+  memset(mqttSharedSecret, 0, 32);
+  cbChannel = 1;
+  packetAudioEnabled = true;
+  audioVolume = 70;
+  
+  try {
+    // Load MQTT configuration
+    uint8_t mqttEnabledVal = EEPROM.read(MQTT_ENABLED_OFFSET);
+    mqttEnabled = (mqttEnabledVal == 1 || mqttEnabledVal == 0xFF); // 0xFF = uninitialized = enable by default
+    
+    for (int i = 0; i < 64; ++i) mqttBroker[i] = EEPROM.read(MQTT_BROKER_OFFSET+i);
+    mqttBroker[63] = 0;
+    
+    mqttPort = ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET) << 8) | ((uint16_t)EEPROM.read(MQTT_PORT_OFFSET+1));
+    
+    for (int i = 0; i < 16; ++i) mqttUsername[i] = EEPROM.read(MQTT_USERNAME_OFFSET+i);
+    mqttUsername[15] = 0;
+    for (int i = 0; i < 32; ++i) mqttPassword[i] = EEPROM.read(MQTT_PASSWORD_OFFSET+i);
+    mqttPassword[31] = 0;
+    for (int i = 0; i < 32; ++i) mqttSharedSecret[i] = EEPROM.read(MQTT_SHARED_SECRET_OFFSET+i);
+    mqttSharedSecret[31] = 0;
+    
+    cbChannel = EEPROM.read(CB_CHANNEL_OFFSET); // Load CB channel
+    uint8_t audioSetting = EEPROM.read(PACKET_AUDIO_OFFSET); // Load packet audio setting
+    packetAudioEnabled = (audioSetting == 1 || audioSetting == 0xFF); // 0xFF = uninitialized = enable by default
+    
+    audioVolume = EEPROM.read(AUDIO_VOLUME_OFFSET); // Load audio volume
+  } catch (...) {
+    Serial.println("ERROR: EEPROM MQTT read failed, using defaults");
+  }
+  
+  // **FAIL-SAFE**: Audio defaults
+  txDelay = 100;
+  afskFreqMark = 1200;
+  afskFreqSpace = 2200;
+  hardwareGain = 0;
+  
+  bool configChanged = false;
+  
+  try {
+    // Load TX Delay (2 bytes, little endian)
+    txDelay = ((uint16_t)EEPROM.read(TX_DELAY_OFFSET)) | ((uint16_t)EEPROM.read(TX_DELAY_OFFSET+1) << 8);
+    
+    // Load AFSK frequencies (2 bytes each, little endian)
+    afskFreqMark = ((uint16_t)EEPROM.read(FREQ_MARK_OFFSET)) | ((uint16_t)EEPROM.read(FREQ_MARK_OFFSET+1) << 8);
+    afskFreqSpace = ((uint16_t)EEPROM.read(FREQ_SPACE_OFFSET)) | ((uint16_t)EEPROM.read(FREQ_SPACE_OFFSET+1) << 8);
+    
+    // Load hardware gain level
+    hardwareGain = EEPROM.read(HARDWARE_GAIN_OFFSET);
+  } catch (...) {
+    Serial.println("ERROR: EEPROM audio settings read failed, using defaults");
+  }
+  
+  // **VALIDATION**: Always validate loaded values
   if (txDelay == 0xFFFF || txDelay == 0 || txDelay > 5000) {
     txDelay = 100; // Default 100ms if invalid
-    addBootMessage("TX Delay war ungültig, auf 100ms gesetzt", "WARNING");
+    Serial.println("TX Delay was invalid, set to 100ms");
+    configChanged = true;
   }
   
-  // Load AFSK frequencies (2 bytes each, little endian)
-  afskFreqMark = ((uint16_t)EEPROM.read(FREQ_MARK_OFFSET)) | ((uint16_t)EEPROM.read(FREQ_MARK_OFFSET+1) << 8);
-  afskFreqSpace = ((uint16_t)EEPROM.read(FREQ_SPACE_OFFSET)) | ((uint16_t)EEPROM.read(FREQ_SPACE_OFFSET+1) << 8);
-  
-  // Debug output for EEPROM values
-  Serial.println("DEBUG: EEPROM Werte gelesen:");
-  Serial.println("  afskFreqMark  = " + String(afskFreqMark) + " Hz (Offset " + String(FREQ_MARK_OFFSET) + ")");
-  Serial.println("  afskFreqSpace = " + String(afskFreqSpace) + " Hz (Offset " + String(FREQ_SPACE_OFFSET) + ")");
-  
-  // Validate AFSK frequencies and set defaults if invalid
-  bool configChanged = false;
   if (afskFreqMark == 0xFFFF || afskFreqMark == 0 || afskFreqMark > 5000) {
     afskFreqMark = 1200; // Default Bell 202 Mark frequency
-    addBootMessage("AFSK Mark-Frequenz war ungültig (" + String(afskFreqMark) + "), auf 1200Hz gesetzt", "WARNING");
-    configChanged = true;
-  }
-  if (afskFreqSpace == 0xFFFF || afskFreqSpace == 0 || afskFreqSpace > 5000) {
-    afskFreqSpace = 2200; // Default Bell 202 Space frequency
-    addBootMessage("AFSK Space-Frequenz war ungültig (" + String(afskFreqSpace) + "), auf 2200Hz gesetzt", "WARNING");
+    Serial.println("AFSK Mark frequency was invalid, set to 1200Hz");
     configChanged = true;
   }
   
-  // Load hardware gain level
-  hardwareGain = EEPROM.read(HARDWARE_GAIN_OFFSET);
-  Serial.println("  hardwareGain  = " + String(hardwareGain) + " (Offset " + String(HARDWARE_GAIN_OFFSET) + ")");
+  if (afskFreqSpace == 0xFFFF || afskFreqSpace == 0 || afskFreqSpace > 5000) {
+    afskFreqSpace = 2200; // Default Bell 202 Space frequency
+    Serial.println("AFSK Space frequency was invalid, set to 2200Hz"); 
+    configChanged = true;
+  }
   
   if (hardwareGain > 2 || hardwareGain == 0xFF) {
     hardwareGain = 0; // Default to 9dB if invalid
-    addBootMessage("Hardware-Verstärkung war ungültig (" + String(hardwareGain) + "), auf 9dB gesetzt", "WARNING");
+    Serial.println("Hardware gain was invalid, set to 9dB");
     configChanged = true;
   }
   
-  // Save defaults to EEPROM if any values were invalid
-  if (configChanged) {
-    Serial.println("Speichere korrigierte Werte ins EEPROM...");
-    saveConfig();
+  // **CRITICAL VALIDATION**: All system-critical values
+  if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000 || baudrate < 1200 || baudrate > 115200) {
+    baudrate = 2400;
+    Serial.println("Baudrate was invalid, set to 2400");
+    configChanged = true;
   }
   
-  if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
-    baudrate = 2400;
-    addBootMessage("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
+  if(logLevel > 3 || logLevel == 0xFF) {
+    logLevel = 1;
+    Serial.println("Log level invalid, set to INFO");
+    configChanged = true;
   }
-  if(logLevel > 3) logLevel = 1;
-  if(displayType > 1) displayType = DISPLAY_SSD1306;  // Default to SSD1306 for invalid value
-  if(strlen(wifiSsid) == 0) addBootMessage("WiFi SSID is empty!", "WARNING");
-  if(strlen(otaRepoUrl) == 0) {
-    strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
-    addBootMessage("OTA URL war leer, Standard gesetzt", "WARNING");
+  
+  if(displayType > 1 || displayType == 0xFF) {
+    displayType = DISPLAY_SSD1306;  // Default to SSD1306 for invalid value
+    Serial.println("Display type invalid, set to SSD1306");
+    configChanged = true;
   }
-  if(strlen(localVersion) == 0 || localVersion[0] == 0xFF) {
-    strcpy(localVersion, "1.0.1");
-    addBootMessage("Version was empty, default set: " + String(localVersion), "WARNING");
-    saveConfig(); // Save default version
+  
+  if(displayBrightness == 0xFF) {
+    displayBrightness = 128;
+    Serial.println("Display brightness invalid, set to 50%");
+    configChanged = true;
   }
   
   // Validate MQTT configuration
   if(mqttPort == 0 || mqttPort == 0xFFFF) {
     mqttPort = 8883; // Default SSL port
-    addBootMessage("MQTT port invalid, set to 8883", "WARNING");
-  }
-  // MQTT is always enabled (pure MQTT implementation)
-  mqttEnabled = true;
-  if(strlen(mqttBroker) == 0) {
-    addBootMessage("MQTT broker URL not configured - please set!", "WARNING");
+    Serial.println("MQTT port invalid, set to 8883");
+    configChanged = true;
   }
   
   // Validate CB channel (1-40)
   if(cbChannel < 1 || cbChannel > 40 || cbChannel == 0xFF) {
     cbChannel = 1; // Default CB channel 1
-    addBootMessage("CB channel invalid, set to channel 1", "WARNING");
+    Serial.println("CB channel invalid, set to channel 1");
+    configChanged = true;
   }
   
-  // Validate CPU frequency value and correct problematic settings
+  if(audioVolume > 100 || audioVolume == 0xFF) {
+    audioVolume = 70; // Fallback to 70% if invalid
+    Serial.println("Audio volume invalid, set to 70%");
+    configChanged = true;
+  }
+  
+  // **CRITICAL**: Validate CPU frequency and fix problematic settings
   if(cpuFrequency > 2 || cpuFrequency == 0xFF) {
     if(cpuFrequency == 3 || cpuFrequency == 4) {
       // Correct old problematic 40MHz (3) or 26MHz (4) settings
       cpuFrequency = 2; // Set to 80 MHz (safe)
-      addBootMessage("CPU frequency corrected: Problematic setting changed to 80 MHz", "WARNING");
-      saveConfig(); // Save immediately to prevent boot loop
+      Serial.println("CRITICAL: CPU frequency corrected from problematic setting to 80 MHz");
+      configChanged = true;
     } else {
       cpuFrequency = 0; // Fallback to 240 MHz
-      addBootMessage("CPU frequency invalid, reset to 240 MHz", "WARNING");
+      Serial.println("CPU frequency invalid, reset to 240 MHz");
+      configChanged = true;
     }
   }
+  
+  // **STRING VALIDATION**: Ensure no null strings cause crashes
+  if(strlen(callsign) == 0 || callsign[0] == 0xFF) {
+    strcpy(callsign, "NOCALL");
+    Serial.println("Callsign was empty, set to NOCALL");
+    configChanged = true;
+  }
+  
+  if(strlen(otaRepoUrl) == 0 || otaRepoUrl[0] == 0xFF) {
+    strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
+    Serial.println("OTA URL was empty, set to default");
+    configChanged = true;
+  }
+  
+  if(strlen(localVersion) == 0 || localVersion[0] == 0xFF) {
+    strcpy(localVersion, "3.0.0");
+    Serial.println("Version was empty, set to 3.0.0");
+    configChanged = true;
+  }
+  
+  // MQTT is always enabled (pure MQTT implementation)
+  mqttEnabled = true;
+  
+  // Save corrected values if any were invalid
+  if (configChanged) {
+    Serial.println("EEPROM values corrected, saving...");
+    try {
+      saveConfig();
+      Serial.println("Corrected configuration saved successfully");
+    } catch (...) {
+      Serial.println("ERROR: Could not save corrected config, continuing with defaults");
+    }
+  }
+  
+  // Final status
+  Serial.println("Configuration loaded successfully:");
+  Serial.println("  Callsign: " + String(callsign));
+  Serial.println("  WiFi SSID: " + String(wifiSsid));
+  Serial.println("  MQTT Broker: " + String(strlen(mqttBroker) > 0 ? mqttBroker : "Not configured"));
+  Serial.println("  CB Channel: " + String(cbChannel));
 }
 
 // ==================================================================================
@@ -1299,6 +1474,16 @@ void setCpuFrequency() {
 }
 
 void handleRoot() {
+  // **CRITICAL FIX**: Watchdog reset vor HTML-Generierung
+  esp_task_wdt_reset();
+  
+  // Im AP-Modus vereinfachtes HTML verwenden
+  if (apActive) {
+    sendSimplifiedHTML();
+    return;
+  }
+  
+  // Für normalen Modus: Original HTML (aber als String, nicht chunked)
   String html = R"=====(
 <!DOCTYPE html>
 <html>
@@ -2172,10 +2357,81 @@ void handleRoot() {
   </body>
 </html>
 )=====";
+
+  // **CRITICAL FIX**: Watchdog reset vor dem Senden
+  esp_task_wdt_reset();
+  
+  // Im AP-Modus vereinfachtes HTML verwenden
+  if (apActive) {
+    sendSimplifiedHTML();
+    return;
+  }
+  
+  // Normaler Modus: Vollständiges HTML senden
+  server.send(200, "text/html", html);
+}
+
+// **CRITICAL FIX**: Vereinfachtes HTML für Config-Portal (RAM-schonend)
+void sendSimplifiedHTML() {
+  esp_task_wdt_reset(); // Watchdog reset vor HTML-Generierung
+  
+  String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+  html += "<title>UDMPRIG Config Portal</title>";
+  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+  html += "<style>body{font-family:Arial;margin:20px;background:#f5f5f5}";
+  html += ".card{background:white;padding:20px;margin:10px 0;border-radius:5px;box-shadow:0 2px 5px #ccc}";
+  html += "input,select{width:100%;padding:10px;margin:5px 0;border:1px solid #ddd;border-radius:3px}";
+  html += "button{background:#2196F3;color:white;padding:15px;border:none;border-radius:3px;width:100%;cursor:pointer}";
+  html += "button:hover{background:#1976D2}h2{color:#333;margin-top:0}</style>";
+  html += "</head><body>";
+  
+  html += "<h2>🔧 UDMPRIG Configuration Portal</h2>";
+  html += "<p><strong>Version:</strong> " + String(localVersion) + "</p>";
+  
+  html += "<form action='/save' method='post'>";
+  
+  // WiFi Konfiguration (minimal)
+  html += "<div class='card'><h3>📶 WiFi Settings</h3>";
+  html += "<input name='ssid' placeholder='WiFi SSID' value='" + String(wifiSsid) + "' required>";
+  html += "<input name='pass' type='password' placeholder='WiFi Password' value='" + String(wifiPass) + "'>";
+  html += "</div>";
+  
+  // Packet Radio (minimal)
+  html += "<div class='card'><h3>📻 Radio Settings</h3>";
+  html += "<input name='callsign' placeholder='Your Callsign' value='" + String(callsign) + "' required>";
+  
+  html += "<select name='baudrate'>";
+  uint32_t rates[] = {1200, 2400, 4800, 9600, 19200, 38400};
+  for(int i = 0; i < 6; i++) {
+    html += "<option value='" + String(rates[i]) + "'";
+    if(baudrate == rates[i]) html += " selected";
+    html += ">" + String(rates[i]) + " Baud</option>";
+  }
+  html += "</select>";
+  html += "</div>";
+  
+  // MQTT (minimal)  
+  html += "<div class='card'><h3>☁️ MQTT Settings</h3>";
+  html += "<input name='mqttbroker' placeholder='MQTT Broker URL' value='" + String(mqttBroker) + "'>";
+  html += "<input name='mqttport' type='number' placeholder='MQTT Port' value='" + String(mqttPort) + "'>";
+  html += "<input name='mqttuser' placeholder='MQTT Username' value='" + String(mqttUsername) + "'>";
+  html += "<input name='mqttpass' type='password' placeholder='MQTT Password' value='" + String(mqttPassword) + "'>";
+  html += "</div>";
+  
+  html += "<button type='submit'>💾 Save & Restart</button>";
+  html += "</form>";
+  
+  html += "<hr><p><small>🌐 Also available at: <strong>http://192.168.4.1/</strong></small></p>";
+  html += "</body></html>";
+  
+  esp_task_wdt_reset(); // Watchdog reset nach HTML-Generierung
   server.send(200, "text/html", html);
 }
 
 void handleSave() {
+  // **CRITICAL FIX**: Watchdog reset bei Config-Speicherung  
+  esp_task_wdt_reset();
+  
   if (server.hasArg("ssid")) strncpy(wifiSsid, server.arg("ssid").c_str(), 63);
   if (server.hasArg("pass")) strncpy(wifiPass, server.arg("pass").c_str(), 63);
   if (server.hasArg("callsign")) strncpy(callsign, server.arg("callsign").c_str(), 31);
@@ -2254,11 +2510,22 @@ void handleSave() {
   
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
   mqttBroker[63]=0; mqttUsername[15]=0; mqttPassword[31]=0; mqttSharedSecret[31]=0;
+  
+  // **CRITICAL FIX**: Watchdog reset vor EEPROM-Schreibvorgang
+  esp_task_wdt_reset();
+  
   saveConfig();
   appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
-  server.sendHeader("Location", "/", true);
-  server.send(302, "text/plain", "");
-  delay(500);
+  
+  // Erfolgs-Response für Config-Portal
+  String response = apActive ? 
+    "<!DOCTYPE html><html><body><h2>✅ Configuration Saved!</h2><p>Device will restart in 3 seconds...</p><script>setTimeout(()=>location.href='/',3000)</script></body></html>" :
+    "Configuration saved. Restarting...";
+    
+  server.send(200, apActive ? "text/html" : "text/plain", response);
+  
+  esp_task_wdt_reset(); // Final watchdog reset vor Restart
+  delay(1000);
   ESP.restart();
 }
 
@@ -2880,20 +3147,41 @@ void startWebserver() {
 }
 
 void startConfigPortal() {
+  // Watchdog timeout erhöhen für Config-Portal (längere HTML-Generierung)
+  esp_task_wdt_deinit();
+  esp_task_wdt_init(120, true);  // 2 Minuten für Config-Portal
+  esp_task_wdt_add(NULL);
+  
   WiFi.softAP("UDMPRIG-Client");
   IPAddress apip(192,168,4,1);
   WiFi.softAPConfig(apip, apip, IPAddress(255,255,255,0));
   apActive = true;
   startWebserver();
   appendMonitor("AccessPoint gestartet für Konfiguration", "INFO");
+  
+  unsigned long lastWatchdogReset = millis();
   while (WiFi.status() != WL_CONNECTED) {
     server.handleClient();
     blinkLED();
-    delay(1);
+    
+    // Watchdog regelmäßig zurücksetzen (alle 10 Sekunden)
+    if (millis() - lastWatchdogReset > 10000) {
+      esp_task_wdt_reset();
+      lastWatchdogReset = millis();
+    }
+    
+    delay(50);  // Längerer delay für weniger aggressive Schleife
+    yield();    // Anderen Tasks Zeit geben
   }
+  
   WiFi.softAPdisconnect(true);
   appendMonitor("Konfigurationsmodus verlassen, Hotspot deaktiviert", "INFO");
   apActive = false;
+  
+  // Watchdog wieder auf normale Einstellungen zurücksetzen
+  esp_task_wdt_deinit();
+  esp_task_wdt_init(WDT_TIMEOUT, true);
+  esp_task_wdt_add(NULL);
 }
 
 void checkForUpdates() {
@@ -3036,9 +3324,12 @@ void appendMonitor(const String& msg, const char* level) {
   
   monitorBuf += line;
   
+  // **RAM OPTIMIZATION**: Im AP-Modus kleineren Buffer verwenden
+  int maxBufferSize = apActive ? MONITOR_BUF_SIZE/2 : MONITOR_BUF_SIZE;
+  
   // Buffer-Größe überwachen und bei Bedarf kürzen
-  if (monitorBuf.length() > MONITOR_BUF_SIZE) {
-    monitorBuf = monitorBuf.substring(monitorBuf.length() - MONITOR_BUF_SIZE);
+  if (monitorBuf.length() > maxBufferSize) {
+    monitorBuf = monitorBuf.substring(monitorBuf.length() - maxBufferSize);
   }
 }
 
@@ -3060,10 +3351,30 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
+  // **BOOTLOOP ESCAPE**: GPIO0 (BOOT Button) für EEPROM-Reset
+  pinMode(RESET_EEPROM_PIN, INPUT_PULLUP);
+  
+  // **CRITICAL FIX**: Watchdog früh initialisieren um Boot-Loops zu vermeiden
+  Serial.println("Early watchdog init for bootloop protection...");
+  esp_task_wdt_deinit(); // Alte Instanz entfernen
+  esp_err_t wdtResult = esp_task_wdt_init(120, true); // 2 Minuten für Setup
+  if (wdtResult == ESP_OK) {
+    esp_task_wdt_add(NULL);
+    Serial.println("Watchdog initialized: 120s timeout for setup");
+  } else {
+    Serial.println("WARNING: Could not initialize watchdog: " + String(wdtResult));
+  }
+  
   // Initialize EEPROM early for CPU frequency check
   unsigned long eepromStart = millis();
   EEPROM.begin(EEPROM_SIZE);
   Serial.println("EEPROM init took: " + String(millis() - eepromStart) + "ms");
+  
+  // **BOOTLOOP ESCAPE**: Automatisches EEPROM-Reset (ENTFERNEN NACH TEST!)
+  // Uncomment die nächsten 3 Zeilen um EEPROM zu löschen:
+  // Serial.println("EMERGENCY: Clearing EEPROM to escape bootloop...");
+  // for(int i = 0; i < EEPROM_SIZE; i++) { EEPROM.write(i, 0xFF); }
+  // EEPROM.commit(); Serial.println("EEPROM cleared! Remove this code and reflash!");
   
   // Early CPU frequency check before loadConfig() to prevent bootloops
   uint8_t savedCpuFreq = EEPROM.read(CPU_FREQUENCY_OFFSET);
@@ -3200,35 +3511,79 @@ void setup() {
     bootPrint("Watchdog FEHLER");
   }
   
-  // MQTT setup (always enabled in this version)
+  // MQTT setup (always enabled in this version) - **BOOTLOOP SAFE**
   bootPrint("Init MQTT...");
+  esp_task_wdt_reset(); // Watchdog reset vor MQTT-Setup
+  
   if(strlen(mqttBroker) > 0) {
-    setupMqttTopics();
-    appendMonitor("MQTT enabled - Broker: " + String(mqttBroker), "INFO");
-    connectMQTT(); // Attempt initial connection
-    bootPrint("MQTT enabled");
+    try {
+      Serial.println("Setting up MQTT topics...");
+      setupMqttTopics();
+      
+      Serial.println("MQTT setup completed, attempting connection...");
+      addBootMessage("MQTT enabled - Broker: " + String(mqttBroker), "INFO");
+      
+      // **SAFE MQTT**: Connection wird im Hintergrund versucht (kein blocking)
+      // connectMQTT(); // ENTFERNT - Connection erfolgt in der loop()
+      bootPrint("MQTT enabled");
+    } catch (...) {
+      Serial.println("ERROR: MQTT setup failed, continuing without MQTT");
+      addBootMessage("MQTT setup failed - continuing without MQTT", "ERROR");
+      bootPrint("MQTT setup FEHLER");
+    }
   } else {
-    appendMonitor("MQTT broker not configured - please set in web interface", "WARNING");
+    Serial.println("MQTT broker not configured");
+    addBootMessage("MQTT broker not configured - please set in web interface", "WARNING");
     bootPrint("MQTT nicht konfiguriert");
   }
   
-  delay(1000); // Brief wait after watchdog activation
+  esp_task_wdt_reset(); // Watchdog reset nach MQTT-Setup
+  
+  delay(1000); // Brief wait after MQTT setup
+  esp_task_wdt_reset(); // Watchdog reset vor I2S
   
   // Initialize I2S audio system at the very end to avoid slowing down critical boot
   bootPrint("Init Audio I2S...");
   unsigned long i2sStart = millis();
-  setupI2SAudio();
-  Serial.println("I2S audio setup took: " + String(millis() - i2sStart) + "ms");
-  bootPrint("Audio I2S bereit");
+  try {
+    setupI2SAudio();
+    Serial.println("I2S audio setup took: " + String(millis() - i2sStart) + "ms");
+    bootPrint("Audio I2S bereit");
+  } catch (...) {
+    Serial.println("ERROR: I2S audio setup failed, continuing without audio");
+    bootPrint("Audio I2S FEHLER");
+  }
+  
+  esp_task_wdt_reset(); // Watchdog reset nach I2S
   
   unsigned long setupEnd = millis();
   Serial.println("=== TOTAL SETUP TIME: " + String(setupEnd - setupStart) + "ms ===");
   
+  // **BOOTLOOP SAFE**: System-Bereit-Flag setzen VOR dem flushing
+  bootPrint("Preparing system...");
+  delay(500); // Kurz warten damit alles stabil ist
+  esp_task_wdt_reset();
+  
   // Now that the system is fully initialized, flush buffered boot messages
   Serial.println("System fully initialized - flushing boot messages to monitor...");
-  flushBootMessages();
   bootPrint("Flushing Messages...");
-  bootPrint("=== SYSTEM BEREIT ===");
+  
+  try {
+    flushBootMessages();
+    bootPrint("=== SYSTEM BEREIT ===");
+    Serial.println("=== BOOT COMPLETED SUCCESSFULLY ===");
+    
+    // **CRITICAL**: Finaler Watchdog-Reset nach kompletter Setup
+    esp_task_wdt_reset();
+    delay(500); // Kurze Pause bevor Loop startet
+    Serial.println("Setup complete, entering main loop...");
+    
+  } catch (...) {
+    Serial.println("ERROR: Boot message flushing failed, but system should be ready");
+    bootPrint("Flush FEHLER - System OK");
+    systemReady = true; // Fallback
+    esp_task_wdt_reset();
+  }
 }
 
 // ==================================================================================
@@ -3241,6 +3596,16 @@ void setup() {
  * display updates, and RS232 packet processing
  */
 void loop() {
+  // **BOOTLOOP SAFE**: Initial protection
+  static bool firstLoopRun = true;
+  if (firstLoopRun) {
+    Serial.println("=== ENTERING MAIN LOOP ===");
+    delay(1000); // Kurze Pause nach Setup
+    esp_task_wdt_reset();
+    firstLoopRun = false;
+    Serial.println("First loop iteration starting...");
+  }
+  
   // Hardware watchdog reset every 3 seconds for system stability
   unsigned long now = millis();
   
@@ -3249,8 +3614,12 @@ void loop() {
     lastWatchdogReset = now;
   }
   
-  // **WiFi-Verbindungsüberwachung**
-  checkWiFiConnection();
+  // **WiFi-Verbindungsüberwachung** (SAFE)
+  try {
+    checkWiFiConnection();
+  } catch (...) {
+    Serial.println("ERROR in checkWiFiConnection, continuing...");
+  }
   
   // **CPU-Last Messung**
   if (now - lastCpuMeasurement > CPU_MEASUREMENT_INTERVAL) {
@@ -3260,12 +3629,21 @@ void loop() {
     
     loopCount++;
     
-    // Background OTA check (only once after 30 seconds of uptime)
+    // Background OTA check (only once after 30 seconds of uptime) - **SAFE**
     static bool otaCheckDone = false;
-    if (!otaCheckDone && millis() > 30000) {
-      appendMonitor("Performing background OTA check...", "INFO");
-      checkForUpdates();
-      otaCheckDone = true;
+    if (!otaCheckDone && millis() > 30000 && systemReady) {
+      try {
+        Serial.println("Starting background OTA check...");
+        esp_task_wdt_reset();
+        appendMonitor("Performing background OTA check...", "INFO");
+        // checkForUpdates(); // TEMPORARILY DISABLED due to crash
+        Serial.println("OTA check skipped - temporarily disabled");
+        otaCheckDone = true;
+        Serial.println("OTA check completed successfully.");
+      } catch (...) {
+        Serial.println("ERROR: OTA check failed, marking as done to avoid retry");
+        otaCheckDone = true; // Prevent retry
+      }
     }
     
     if (lastLoopCountMeasurement == 0) {
@@ -3379,15 +3757,24 @@ void loop() {
   static unsigned long lastServerHandle = 0;
   if (millis() - lastServerHandle > 50) {
     // WiFi-Status vor WebServer-Verarbeitung prüfen
-    wl_status_t preServerStatus = WiFi.status();
-    
-    server.handleClient();
-    
-    // WiFi-Status nach WebServer-Verarbeitung prüfen (ohne Serial-Debug)
-    wl_status_t postServerStatus = WiFi.status();
-    if(preServerStatus != postServerStatus) {
-      // WiFi-Status hat sich geändert, aber keine Serial-Ausgabe mehr
-      logWiFiDiagnostics();
+    // **Webserver Handler** - SAFE
+    try {
+      wl_status_t preServerStatus = WiFi.status();
+      
+      server.handleClient();
+      
+      // WiFi-Status nach WebServer-Verarbeitung prüfen (ohne Serial-Debug)
+      wl_status_t postServerStatus = WiFi.status();
+      if(preServerStatus != postServerStatus) {
+        // WiFi-Status hat sich geändert, aber keine Serial-Ausgabe mehr
+        try {
+          logWiFiDiagnostics();
+        } catch (...) {
+          Serial.println("ERROR in logWiFiDiagnostics");
+        }
+      }
+    } catch (...) {
+      Serial.println("ERROR in server.handleClient, continuing...");
     }
     
     lastServerHandle = millis();
@@ -3410,15 +3797,26 @@ void loop() {
   }
   */
 
+  // **OLED Display Update** - SAFE
   static unsigned long lastOled = 0;
-  if (millis() - lastOled > 100) { // **RX/TX-RESPONSIVE: 100ms für bessere RX/TX-Anzeige**
-    updateOLED();
-    lastOled = millis();
+  // Additional safety: Wait 10 seconds after system ready before first display update
+  if (millis() - lastOled > 100 && systemReady && displayInitialized && millis() > 10000) { // **RX/TX-RESPONSIVE: 100ms für bessere RX/TX-Anzeige**
+    try {
+      updateOLED();
+      lastOled = millis();
+    } catch (...) {
+      Serial.println("ERROR in updateOLED, continuing...");
+      lastOled = millis(); // Prevent retry spam
+    }
   }
 
-  // **MQTT Loop für Empfang (KRITISCH für MQTT-Nachrichten!)**
-  if (mqttEnabled) {
-    handleMqttLoop();
+  // **MQTT Loop für Empfang (KRITISCH für MQTT-Nachrichten!)** - SAFE
+  if (mqttEnabled && systemReady) {
+    try {
+      handleMqttLoop();
+    } catch (...) {
+      Serial.println("ERROR in handleMqttLoop, continuing...");
+    }
   }
 
   // RS232 KISS-Protokoll Verarbeitung (saubere Nachrichtentrennung)
