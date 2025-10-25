@@ -3636,8 +3636,7 @@ void loop() {
         Serial.println("Starting background OTA check...");
         esp_task_wdt_reset();
         appendMonitor("Performing background OTA check...", "INFO");
-        // checkForUpdates(); // TEMPORARILY DISABLED due to crash
-        Serial.println("OTA check skipped - temporarily disabled");
+        checkForUpdates();
         otaCheckDone = true;
         Serial.println("OTA check completed successfully.");
       } catch (...) {
