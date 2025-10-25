@@ -1791,8 +1791,8 @@ void handleRoot() {
             <div class="input-field custom-row">
               <select id="displaybrightness" name="displaybrightness">
                 <option value="0")=====";
-  if(displayBrightness == 0) html += " selected";
-  html += R"=====(>1% (Minimal)</option>
+  if(displayBrightness == 23) html += " selected";
+  html += R"=====(>10% (Minimal)</option>
                 <option value="51")=====";
   if(displayBrightness >= 46 && displayBrightness <= 55) html += " selected";
   html += R"=====(>20% (Sehr dunkel)</option>
