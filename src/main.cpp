@@ -302,6 +302,8 @@ const int   daylightOffset_sec = 3600;       // Daylight saving time offset
 
 char localVersion[16] = FIRMWARE_VERSION; // Version compiled into this firmware
 bool otaCheckedThisSession = false;     // OTA check performed this session flag
+String remoteFirmwareVersion = "";
+unsigned long lastRemoteVersionCheck = 0;
 
 // ==================================================================================
 // SYSTEM PROTECTION AND MONITORING
@@ -484,17 +486,17 @@ bool initDisplay() {
 // HTTPS HTTPClient configuration with automatic URL detection
 void configureHTTPClient(HTTPClient &http, String url) {
   if (url.startsWith("https://")) {
-    WiFiClientSecure *client = new WiFiClientSecure;
+    static WiFiClientSecure client;
     
     if (sslValidation) {
       // Real SSL certificate validation (for official certificates)
-      client->setCACert(root_ca);
+      client.setCACert(root_ca);
     } else {
       // For self-signed certificates: disable certificate validation
-      client->setInsecure(); 
+      client.setInsecure();
     }
     
-    http.begin(*client, url);
+    http.begin(client, url);
   } else {
     // Standard HTTP connection
     http.begin(url);
@@ -504,6 +506,24 @@ void configureHTTPClient(HTTPClient &http, String url) {
   http.setTimeout(10000);  // 10 seconds instead of 5
   http.setConnectTimeout(5000);  // 5 seconds instead of 3
   http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+}
+
+bool isValidFirmwareVersion(const String &version) {
+  if (version.length() == 0 || version.length() > 15) return false;
+  int separators = 0;
+  bool hasDigit = false;
+  for (size_t i = 0; i < version.length(); ++i) {
+    char c = version.charAt(i);
+    if (c >= '0' && c <= '9') {
+      hasDigit = true;
+    } else if (c == '.' && hasDigit && separators < 2) {
+      ++separators;
+      hasDigit = false;
+    } else {
+      return false;
+    }
+  }
+  return separators == 2 && hasDigit;
 }
 uint16_t getDisplayWhite() {
   if (displayType == DISPLAY_SSD1306) {
@@ -2061,7 +2081,8 @@ void handleRoot() {
           <span class="card-title"><i class="material-icons left">info</i>Firmware Info</span>
           <p><strong>Aktuelle Version:</strong> )=====";
   html += String(localVersion);
-  html += R"=====(</p>
+          html += R"=====(</p>
+            <p><strong>Neueste Release-Version:</strong> <span id="remoteFirmwareVersion">Wird geprüft …</span></p>
           <p><strong>OTA Repository:</strong><br><small>)=====";
   html += String(otaRepoUrl);
   html += R"=====(</small></p>
@@ -2190,12 +2211,19 @@ void handleRoot() {
             document.getElementById('flashUsage').textContent = data.memory.flashUsage || '-';
             
             document.getElementById('firmwareVersion').textContent = data.system.firmwareVersion || '-';
+            const remoteVersionElement = document.getElementById('remoteFirmwareVersion');
+            if (remoteVersionElement) {
+              remoteVersionElement.textContent = data.system.remoteFirmwareVersion || 'Nicht erreichbar';
+            }
             document.getElementById('uptime').textContent = data.system.uptime || '-';
             document.getElementById('bootReason').textContent = data.system.bootReason || '-';
             document.getElementById('temperature').textContent = data.system.temperature || '-';
             document.getElementById('cpuUsage').textContent = data.system.cpuUsage || '-';
             document.getElementById('displayType').textContent = data.system.displayType || '-';
-            document.getElementById('sslValidation').textContent = data.system.sslValidation || '-';
+            const sslValidationElement = document.getElementById('sslValidation');
+            if (sslValidationElement) {
+              sslValidationElement.textContent = data.system.sslValidation || '-';
+            }
             
             // MQTT Status anzeigen
             if (data.mqtt) {
@@ -2670,6 +2698,23 @@ void handleHardwareInfo() {
   // System Information
   json += "\"system\":{";
   json += "\"firmwareVersion\":\"" + String(localVersion) + "\",";
+  if (WiFi.status() == WL_CONNECTED &&
+      (lastRemoteVersionCheck == 0 || millis() - lastRemoteVersionCheck >= 60000UL)) {
+    lastRemoteVersionCheck = millis();
+    HTTPClient versionHttp;
+    String versionUrl = String(otaRepoUrl) + "/version.txt?ts=" + String(millis());
+    configureHTTPClient(versionHttp, versionUrl);
+    versionHttp.addHeader("Cache-Control", "no-cache");
+    if (versionHttp.GET() == 200) {
+      String fetchedVersion = versionHttp.getString();
+      fetchedVersion.trim();
+      if (isValidFirmwareVersion(fetchedVersion)) {
+        remoteFirmwareVersion = fetchedVersion;
+      }
+    }
+    versionHttp.end();
+  }
+  json += "\"remoteFirmwareVersion\":\"" + remoteFirmwareVersion + "\",";
   
   // Uptime calculation - Format: "HH:MM:SS" or "Xd HH:MM:SS"
   String uptime = getFormattedUptime();
@@ -3269,7 +3314,7 @@ void checkForUpdates() {
     String remoteVersion = http.getString();
     remoteVersion.trim();
     appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
-    if(remoteVersion.length() > 0 && remoteVersion != String(localVersion)) {
+    if(isValidFirmwareVersion(remoteVersion) && remoteVersion != String(localVersion)) {
       appendMonitor("OTA: Neue Version gefunden (" + remoteVersion + "), Update wird geladen!", "INFO");
       showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
 
@@ -3340,8 +3385,8 @@ void checkForUpdates() {
         delay(4000);
       }
       return;
-    } else if (remoteVersion.length() == 0) {
-      appendMonitor("OTA: Versionsdatei ist leer; Update wird übersprungen.", "WARNING");
+    } else if (!isValidFirmwareVersion(remoteVersion)) {
+      appendMonitor("OTA: Ungültige Versionsdatei; Update wird übersprungen.", "WARNING");
     } else {
       appendMonitor("OTA: Firmware aktuell.", "INFO");
     }
