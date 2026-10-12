@@ -35,6 +35,7 @@
 
 // Arduino Core - MUSS als erstes include sein!
 #include <Arduino.h>
+#include "firmware_version.h"
 
 // Core ESP32 and communication libraries
 #include <Wire.h>
@@ -100,6 +101,8 @@
 #define FREQ_MARK_OFFSET 501           // AFSK Mark frequency (2 bytes, default: 1200 Hz)
 #define FREQ_SPACE_OFFSET 503          // AFSK Space frequency (2 bytes, default: 2200 Hz)
 #define HARDWARE_GAIN_OFFSET 505       // Hardware gain level 0-3 (1 byte)
+#define OLED_SHIFT_INTERVAL_OFFSET 506 // OLED shift interval (minutes, 2 bytes)
+#define OLED_SHIFT_PIXELS_OFFSET 508   // OLED shift distance (pixels, 1 byte)
 
 // Crash log system storage (EEPROM 510-1023) - MOVED to avoid conflicts
 #define CRASH_LOG_START_OFFSET 510
@@ -200,7 +203,7 @@ char wifiSsid[64] = "";                  // WiFi network name
 char wifiPass[64] = "";                  // WiFi password
 char serverUrl[64] = "";                 // Legacy server URL (unused in MQTT mode)
 char callsign[32] = "";                  // Station callsign identifier
-char otaRepoUrl[128] = "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota";
+char otaRepoUrl[128] = "https://github.com/nad22/UDM-Packet-Radio-Internet-Gateway/releases/latest/download";
 
 // System configuration
 uint32_t baudrate = 2400;               // RS232 serial baudrate
@@ -209,6 +212,12 @@ uint8_t displayType = DISPLAY_SSD1306;  // Display type (default: smaller SSD130
 bool sslValidation = true;              // SSL certificate validation enabled
 uint8_t cpuFrequency = 0;               // CPU frequency (0=240MHz, 1=160MHz, 2=80MHz)
 uint8_t displayBrightness = 128;        // Display brightness level (0-255, default: 50%)
+uint16_t oledShiftIntervalMinutes = 1;   // OLED anti-burn-in shift interval (0 disables)
+uint8_t oledShiftPixels = 1;             // OLED anti-burn-in shift distance (0 disables)
+int8_t oledOffsetX = 0;
+int8_t oledOffsetY = 0;
+uint8_t oledShiftDirection = 0;
+unsigned long lastOledShift = 0;
 
 // MQTT configuration for serverless CB-Funk simulation
 bool mqttEnabled = true;                // MQTT mode enabled (pure MQTT implementation)
@@ -291,7 +300,7 @@ const int   daylightOffset_sec = 3600;       // Daylight saving time offset
 // OTA (Over-The-Air) UPDATE SYSTEM
 // ==================================================================================
 
-char localVersion[16] = "3.0.0";       // Current firmware version (stable I2C-optimized)
+char localVersion[16] = FIRMWARE_VERSION; // Version compiled into this firmware
 bool otaCheckedThisSession = false;     // OTA check performed this session flag
 
 // ==================================================================================
@@ -494,6 +503,7 @@ void configureHTTPClient(HTTPClient &http, String url) {
   // Standard timeouts (longer timeouts for smart polling)
   http.setTimeout(10000);  // 10 seconds instead of 5
   http.setConnectTimeout(5000);  // 5 seconds instead of 3
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
 }
 uint16_t getDisplayWhite() {
   if (displayType == DISPLAY_SSD1306) {
@@ -657,8 +667,8 @@ void showOTAUpdateScreen(const char* text, float progress = -1) {
 }
 
 void drawWifiStrength(int strength) {
-  int x = SCREEN_WIDTH - 22;
-  int y = 0;
+  int x = SCREEN_WIDTH - 22 + oledOffsetX;
+  int y = oledOffsetY;
   
   uint16_t white = getDisplayWhite();
   uint16_t black = (displayType == DISPLAY_SSD1306) ? SSD1306_BLACK : SH110X_BLACK;
@@ -818,13 +828,13 @@ void drawCBChannelDisplay() {
   }
   
   // Calculate centered Y position between horizontal line (32) and display bottom (64)
-  int centerY = 42; // Centered between line and bottom edge
+  int centerY = 42 + oledOffsetY; // Centered between line and bottom edge
   
   // Calculate horizontal centering for the COMPLETE CB display group
   // CH(12px) + gap(6px) + digit1(9px) + separation(2px) + digit2(9px) + gap(8px) + RX/TX(29px) = 75px total
   int displayWidth = 128; // Both displays 128px wide
   int totalDisplayWidth = 75; // Total width of complete CB display with RX/TX
-  int startX = (displayWidth - totalDisplayWidth) / 2; // Perfect centering of entire group
+  int startX = (displayWidth - totalDisplayWidth) / 2 + oledOffsetX; // Perfect centering of entire group
   
   // "CH" text (centered position)
   if (displayType == DISPLAY_SSD1306) {
@@ -920,6 +930,38 @@ void updateOLED() {
   if (!displayInitialized) {
     return;
   }
+
+  unsigned long now = millis();
+  if (lastOledShift == 0) {
+    lastOledShift = now;
+  }
+  if (oledShiftIntervalMinutes > 0 && oledShiftPixels > 0 &&
+      now - lastOledShift >= (unsigned long)oledShiftIntervalMinutes * 60000UL) {
+    lastOledShift = now;
+    switch (oledShiftDirection) {
+      case 0: oledOffsetX = oledShiftPixels; break;
+      case 1: oledOffsetY = oledShiftPixels; break;
+      case 2: oledOffsetX = 0; break;
+      case 3: oledOffsetY = 0; break;
+    }
+    oledShiftDirection = (oledShiftDirection + 1) % 4;
+  }
+
+  static unsigned long lastStatusToggle = 0;
+  static bool showIpAddress = false;
+  if (now - lastStatusToggle >= 10000UL) {
+    showIpAddress = !showIpAddress;
+    lastStatusToggle = now;
+  }
+
+  String statusText;
+  if (showIpAddress) {
+    statusText = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "IP: NO WIFI";
+  } else if (mqttEnabled) {
+    statusText = isMqttConnected() ? "MQTT ONLINE" : "MQTT OFFLINE";
+  } else {
+    statusText = "MQTT DISABLED";
+  }
   
   // Query WiFi signal strength only every 1000ms (performance optimization)
   static unsigned long lastWiFiRSSI = 0;
@@ -944,56 +986,36 @@ void updateOLED() {
     display_ssd1306.clearDisplay();
     display_ssd1306.setTextColor(getDisplayWhite());
     display_ssd1306.setTextSize(2);
-    display_ssd1306.setCursor(0,1);
+    display_ssd1306.setCursor(oledOffsetX, 1 + oledOffsetY);
     display_ssd1306.print(callsign);
     
     drawWifiStrength(cachedStrength);
-    display_ssd1306.drawLine(0, 19, SCREEN_WIDTH, 19, getDisplayWhite());
+    display_ssd1306.drawLine(oledOffsetX, 19 + oledOffsetY, SCREEN_WIDTH + oledOffsetX, 19 + oledOffsetY, getDisplayWhite());
     display_ssd1306.setTextSize(1);
-    const char* mqttStatus;
-    if (mqttEnabled) {
-      if (isMqttConnected()) {
-        mqttStatus = "MQTT ONLINE";
-      } else {
-        mqttStatus = "MQTT OFFLINE";
-      }
-    } else {
-      mqttStatus = "MQTT DISABLED";
-    }
     int16_t x1, y1;
     uint16_t w, h;
-    display_ssd1306.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
-    display_ssd1306.setCursor((SCREEN_WIDTH - w) / 2, 22);
-    display_ssd1306.print(mqttStatus);
-    display_ssd1306.drawLine(0, 31, SCREEN_WIDTH, 31, getDisplayWhite());
+    display_ssd1306.getTextBounds(statusText, 0, 0, &x1, &y1, &w, &h);
+    display_ssd1306.setCursor((SCREEN_WIDTH - w) / 2 + oledOffsetX, 22 + oledOffsetY);
+    display_ssd1306.print(statusText);
+    display_ssd1306.drawLine(oledOffsetX, 31 + oledOffsetY, SCREEN_WIDTH + oledOffsetX, 31 + oledOffsetY, getDisplayWhite());
     drawCBChannelDisplay(); // Render CB channel display instead of RX/TX indicators
     display_ssd1306.display();
   } else {
     display_sh1106.clearDisplay();
     display_sh1106.setTextColor(getDisplayWhite());
     display_sh1106.setTextSize(2);
-    display_sh1106.setCursor(0,1);
+    display_sh1106.setCursor(oledOffsetX, 1 + oledOffsetY);
     display_sh1106.print(callsign);
     
     drawWifiStrength(cachedStrength);
-    display_sh1106.drawLine(0, 19, SCREEN_WIDTH, 19, getDisplayWhite());
+    display_sh1106.drawLine(oledOffsetX, 19 + oledOffsetY, SCREEN_WIDTH + oledOffsetX, 19 + oledOffsetY, getDisplayWhite());
     display_sh1106.setTextSize(1);
-    const char* mqttStatus;
-    if (mqttEnabled) {
-      if (isMqttConnected()) {
-        mqttStatus = "MQTT ONLINE";
-      } else {
-        mqttStatus = "MQTT OFFLINE";
-      }
-    } else {
-      mqttStatus = "MQTT DISABLED";
-    }
     int16_t x1, y1;
     uint16_t w, h;
-    display_sh1106.getTextBounds(mqttStatus, 0, 0, &x1, &y1, &w, &h);
-    display_sh1106.setCursor((SCREEN_WIDTH - w) / 2, 22);
-    display_sh1106.print(mqttStatus);
-    display_sh1106.drawLine(0, 31, SCREEN_WIDTH, 31, getDisplayWhite());
+    display_sh1106.getTextBounds(statusText, 0, 0, &x1, &y1, &w, &h);
+    display_sh1106.setCursor((SCREEN_WIDTH - w) / 2 + oledOffsetX, 22 + oledOffsetY);
+    display_sh1106.print(statusText);
+    display_sh1106.drawLine(oledOffsetX, 31 + oledOffsetY, SCREEN_WIDTH + oledOffsetX, 31 + oledOffsetY, getDisplayWhite());
     drawCBChannelDisplay(); // New CB channel display instead of drawRXTXRects()
     display_sh1106.display();
   }
@@ -1010,7 +1032,6 @@ void saveConfig() {
   for (int i = 0; i < 64; ++i) EEPROM.write(SERVERURL_OFFSET+i, serverUrl[i]);
   for (int i = 0; i < 32; ++i) EEPROM.write(CALLSIGN_OFFSET+i, callsign[i]);
   for (int i = 0; i < 128; ++i) EEPROM.write(OTAURL_OFFSET+i, otaRepoUrl[i]);
-  for (int i = 0; i < 16; ++i) EEPROM.write(VERSION_OFFSET+i, localVersion[i]);
   EEPROM.write(BAUD_OFFSET, (baudrate >> 24) & 0xFF);
   EEPROM.write(BAUD_OFFSET+1, (baudrate >> 16) & 0xFF);
   EEPROM.write(BAUD_OFFSET+2, (baudrate >> 8) & 0xFF);
@@ -1045,6 +1066,9 @@ void saveConfig() {
   
   // Save hardware gain level
   EEPROM.write(HARDWARE_GAIN_OFFSET, hardwareGain);
+  EEPROM.write(OLED_SHIFT_INTERVAL_OFFSET, oledShiftIntervalMinutes & 0xFF);
+  EEPROM.write(OLED_SHIFT_INTERVAL_OFFSET + 1, (oledShiftIntervalMinutes >> 8) & 0xFF);
+  EEPROM.write(OLED_SHIFT_PIXELS_OFFSET, oledShiftPixels);
   
   EEPROM.commit();
   Serial.println("Configuration saved successfully to EEPROM");
@@ -1079,21 +1103,19 @@ void loadConfig() {
     return;
   }
   // **FAIL-SAFE**: Initialize with safe defaults
-  strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
-  strcpy(localVersion, "3.0.0");
+  strcpy(otaRepoUrl, "https://github.com/nad22/UDM-Packet-Radio-Internet-Gateway/releases/latest/download");
   baudrate = 2400;
   logLevel = 1;
   displayType = DISPLAY_SSD1306;
   sslValidation = true;
   cpuFrequency = 0;
   displayBrightness = 128;
+  oledShiftIntervalMinutes = 1;
+  oledShiftPixels = 1;
   
   try {
     for (int i = 0; i < 128; ++i) otaRepoUrl[i] = EEPROM.read(OTAURL_OFFSET+i);
     otaRepoUrl[127] = 0;
-    for (int i = 0; i < 16; ++i) localVersion[i] = EEPROM.read(VERSION_OFFSET+i);
-    localVersion[15] = 0;
-    
     baudrate = ((uint32_t)EEPROM.read(BAUD_OFFSET) << 24)
              | ((uint32_t)EEPROM.read(BAUD_OFFSET+1) << 16)
              | ((uint32_t)EEPROM.read(BAUD_OFFSET+2) << 8)
@@ -1107,6 +1129,10 @@ void loadConfig() {
     
     cpuFrequency = EEPROM.read(CPU_FREQUENCY_OFFSET);  // Load CPU frequency
     displayBrightness = EEPROM.read(DISPLAY_BRIGHTNESS_OFFSET);  // Load display brightness
+    uint16_t storedShiftInterval = EEPROM.read(OLED_SHIFT_INTERVAL_OFFSET)
+                   | ((uint16_t)EEPROM.read(OLED_SHIFT_INTERVAL_OFFSET + 1) << 8);
+    oledShiftIntervalMinutes = storedShiftInterval;
+    oledShiftPixels = EEPROM.read(OLED_SHIFT_PIXELS_OFFSET);
   } catch (...) {
     Serial.println("ERROR: EEPROM config read failed, using defaults");
   }
@@ -1219,6 +1245,15 @@ void loadConfig() {
     Serial.println("Display brightness invalid, set to 50%");
     configChanged = true;
   }
+
+  if (oledShiftIntervalMinutes == 0xFFFF || oledShiftIntervalMinutes > 1440) {
+    oledShiftIntervalMinutes = 1;
+    configChanged = true;
+  }
+  if (oledShiftPixels == 0xFF || oledShiftPixels > 8) {
+    oledShiftPixels = 1;
+    configChanged = true;
+  }
   
   // Validate MQTT configuration
   if(mqttPort == 0 || mqttPort == 0xFFFF) {
@@ -1261,15 +1296,12 @@ void loadConfig() {
     configChanged = true;
   }
   
-  if(strlen(otaRepoUrl) == 0 || otaRepoUrl[0] == 0xFF) {
-    strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
-    Serial.println("OTA URL was empty, set to default");
+  if (strcmp(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota") == 0) {
+    strcpy(otaRepoUrl, "https://github.com/nad22/UDM-Packet-Radio-Internet-Gateway/releases/latest/download");
     configChanged = true;
-  }
-  
-  if(strlen(localVersion) == 0 || localVersion[0] == 0xFF) {
-    strcpy(localVersion, "3.0.0");
-    Serial.println("Version was empty, set to 3.0.0");
+  } else if(strlen(otaRepoUrl) == 0 || otaRepoUrl[0] == 0xFF) {
+    strcpy(otaRepoUrl, "https://github.com/nad22/UDM-Packet-Radio-Internet-Gateway/releases/latest/download");
+    Serial.println("OTA URL was empty, set to default");
     configChanged = true;
   }
   
@@ -1810,6 +1842,19 @@ void handleRoot() {
   html += R"=====(>100% (Maximum)</option>
               </select>
               <label for="displaybrightness">Display-Helligkeit</label>
+            </div>
+            <div class="input-field custom-row">
+              <input id="oledshiftinterval" name="oledshiftinterval" type="number" min="0" max="1440" value=")=====";
+  html += String(oledShiftIntervalMinutes);
+  html += R"=====(">
+              <label for="oledshiftinterval" class="active">OLED-Verschiebeintervall (Minuten, 0 = aus)</label>
+            </div>
+            <div class="input-field custom-row">
+              <input id="oledshiftpixels" name="oledshiftpixels" type="number" min="0" max="8" value=")=====";
+  html += String(oledShiftPixels);
+  html += R"=====(">
+              <label for="oledshiftpixels" class="active">OLED-Verschiebung (Pixel, 0 = aus)</label>
+              <span class="helper-text">Wandert zyklisch rechts, runter, links und rauf.</span>
             </div>
             <div class="input-field custom-row">
               <select id="loglevel" name="loglevel">
@@ -2408,6 +2453,10 @@ void sendSimplifiedHTML() {
     html += ">" + String(rates[i]) + " Baud</option>";
   }
   html += "</select>";
+  html += "<label>OLED anti-burn interval (minutes, 0 = off)</label>";
+  html += "<input name='oledshiftinterval' type='number' min='0' max='1440' value='" + String(oledShiftIntervalMinutes) + "'>";
+  html += "<label>OLED shift distance (pixels, 0 = off)</label>";
+  html += "<input name='oledshiftpixels' type='number' min='0' max='8' value='" + String(oledShiftPixels) + "'>";
   html += "</div>";
   
   // MQTT (minimal)  
@@ -2452,6 +2501,23 @@ void handleSave() {
     if(brightness >= 0 && brightness <= 255) {
       displayBrightness = brightness;
       appendMonitor("Display-Helligkeit gespeichert: " + String(brightness), "INFO");
+    }
+  }
+  if (server.hasArg("oledshiftinterval")) {
+    int interval = server.arg("oledshiftinterval").toInt();
+    if (interval >= 0 && interval <= 1440) {
+      oledShiftIntervalMinutes = interval;
+      lastOledShift = millis();
+    }
+  }
+  if (server.hasArg("oledshiftpixels")) {
+    int pixels = server.arg("oledshiftpixels").toInt();
+    if (pixels >= 0 && pixels <= 8) {
+      oledShiftPixels = pixels;
+      oledOffsetX = 0;
+      oledOffsetY = 0;
+      oledShiftDirection = 0;
+      lastOledShift = millis();
     }
   }
   if (server.hasArg("cbchannel")) {
@@ -3189,29 +3255,28 @@ void checkForUpdates() {
   if (otaCheckedThisSession) return;
   otaCheckedThisSession = true;
   
-  // GitHub OTA URLs verwenden (unabhängig von serverUrl)
-  String urlVersion = String(otaRepoUrl) + "/version.txt";
-  String urlFirmware = String(otaRepoUrl) + "/udm-prig-client.ino.bin";
+  // Version and binary are attached to the same GitHub release. Cache-bust the
+  // latest-release alias so a CDN cannot keep returning stale version metadata.
+  String urlVersion = String(otaRepoUrl) + "/version.txt?ts=" + String(millis());
+  String urlFirmware;
 
   appendMonitor("OTA: Prüfe auf neue Firmware unter " + urlVersion, "INFO");
   HTTPClient http;
   configureHTTPClient(http, urlVersion);
+  http.addHeader("Cache-Control", "no-cache");
   int httpCode = http.GET();
   if(httpCode == 200) {
     String remoteVersion = http.getString();
     remoteVersion.trim();
     appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
-    if(remoteVersion != String(localVersion)) {
+    if(remoteVersion.length() > 0 && remoteVersion != String(localVersion)) {
       appendMonitor("OTA: Neue Version gefunden (" + remoteVersion + "), Update wird geladen!", "INFO");
-      
-      // Disable watchdog during firmware update to prevent timeout
-      esp_task_wdt_deinit();
-      appendMonitor("OTA: Watchdog deaktiviert für Firmware-Update", "INFO");
-      
       showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
 
       http.end();
+      urlFirmware = String(otaRepoUrl) + "/udm-prig-client.ino.bin?version=" + remoteVersion;
       configureHTTPClient(http, urlFirmware);
+      http.addHeader("Cache-Control", "no-cache");
       int resp = http.GET();
       if(resp == 200) {
         int contentLength = http.getSize();
@@ -3220,55 +3285,63 @@ void checkForUpdates() {
           bool canBegin = Update.begin(contentLength);
           if(canBegin) {
             uint8_t buff[512];
-            int written = 0;
-            int totalRead = 0;
+            size_t totalRead = 0;
+            bool writeFailed = false;
             unsigned long lastDisplay = millis();
             while(http.connected() && totalRead < contentLength) {
               size_t avail = stream->available();
               if(avail) {
-                int read = stream->readBytes(buff, ((avail > sizeof(buff)) ? sizeof(buff) : avail));
-                Update.write(buff, read);
+                size_t toRead = min(avail, sizeof(buff));
+                size_t read = stream->readBytes(buff, toRead);
+                if (read == 0 || Update.write(buff, read) != read) {
+                  writeFailed = true;
+                  break;
+                }
                 totalRead += read;
                 float progress = float(totalRead) / float(contentLength);
                 if(millis() - lastDisplay > 100) {
                   showOTAUpdateScreen("Bitte NICHT abstecken", progress);
                   lastDisplay = millis();
                 }
+              } else {
+                delay(1);
               }
+              esp_task_wdt_reset();
               yield();
             }
-            if(Update.end(true)) {
+            http.end();
+            if(!writeFailed && totalRead == (size_t)contentLength && Update.end(true)) {
               showOTAUpdateScreen("Update abgeschlossen!", 1.0);
               appendMonitor("OTA-Update erfolgreich! Neustart...", "INFO");
-              // Speichere neue Version im EEPROM
-              strncpy(localVersion, remoteVersion.c_str(), 15);
-              localVersion[15] = 0;
-              saveConfig();
-              appendMonitor("Neue Version gespeichert: " + String(localVersion), "INFO");
               delay(2000);
               ESP.restart();
             } else {
+              Update.abort();
               showOTAUpdateScreen("Fehler beim Update!", 0.0);
-              appendMonitor(String("OTA fehlgeschlagen: ") + Update.getError(), "ERROR");
+              appendMonitor("OTA fehlgeschlagen: unvollständiger Download oder Schreibfehler (" + String(Update.getError()) + ")", "ERROR");
               delay(4000);
             }
           } else {
+            http.end();
             showOTAUpdateScreen("Update Init Fehler!", 0.0);
             appendMonitor("OTA konnte nicht gestartet werden!", "ERROR");
             delay(4000);
           }
         } else {
+          http.end();
           showOTAUpdateScreen("Leere Firmware!", 0.0);
           appendMonitor("OTA: Leere Firmwaredatei.", "ERROR");
           delay(4000);
         }
       } else {
+        http.end();
         showOTAUpdateScreen("Download Fehler!", 0.0);
         appendMonitor("OTA: Fehler beim Firmware-Download: " + String(resp), "ERROR");
         delay(4000);
       }
-      http.end();
       return;
+    } else if (remoteVersion.length() == 0) {
+      appendMonitor("OTA: Versionsdatei ist leer; Update wird übersprungen.", "WARNING");
     } else {
       appendMonitor("OTA: Firmware aktuell.", "INFO");
     }

@@ -1,28 +1,14 @@
-# OTA Update System
+# OTA and release workflow
 
-## Dateien für Over-The-Air Updates
+A push to `main` (or a manual run of the GitHub Actions workflow) builds the ESP32 firmware, increments the patch version from the latest `vX.Y.Z` release tag, and publishes a GitHub Release containing:
 
-### version.txt
-Enthält die aktuelle Firmware-Version (z.B. "1.0.1")
+- `udm-prig-client.ino.bin` — firmware image for OTA
+- `version.txt` — version compiled into that firmware
 
-### UDMPRG-Client.ino.bin
-Die kompilierte Firmware-Binärdatei für ESP32
+The ESP32 downloads both assets from:
 
-## GitHub Raw URLs
+`https://github.com/nad22/UDM-Packet-Radio-Internet-Gateway/releases/latest/download/`
 
-Die OTA-URLs zeigen auf GitHub Raw Files:
-- Version: `https://raw.githubusercontent.com/DEIN-USERNAME/DEIN-REPO/main/ota/version.txt`
-- Firmware: `https://raw.githubusercontent.com/DEIN-USERNAME/DEIN-REPO/main/ota/UDMPRG-Client.ino.bin`
+The release workflow requires GitHub Actions to be enabled and the repository setting **Settings → Actions → General → Workflow permissions** to allow a token to create releases (the workflow requests `contents: write`).
 
-## Firmware-Kompilierung
-
-Um eine neue .bin-Datei zu erstellen:
-1. Arduino IDE öffnen
-2. Sketch -> Export compiled Binary
-3. .bin-Datei ins ota/ Verzeichnis kopieren
-4. version.txt aktualisieren
-5. Alles committen und pushen
-
-## Automatisches Update
-
-Der ESP32 prüft beim Start automatisch auf Updates.
+For local builds, `include/firmware_version.h` supplies the fallback version. The build hook copies the generated image into this directory; only the automated release workflow publishes OTA assets.
