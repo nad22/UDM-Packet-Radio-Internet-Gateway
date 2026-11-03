@@ -2074,6 +2074,20 @@ void handleRoot() {
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="card-content">
+          <span class="card-title"><i class="material-icons left">swap_horiz</i>RS-232 Test</span>
+          <div class="input-field">
+            <textarea id="rs232TestMessage" class="materialize-textarea" maxlength="256"></textarea>
+            <label for="rs232TestMessage">Nachricht (max. 256 Zeichen)</label>
+          </div>
+          <button class="btn waves-effect waves-light teal" type="button" onclick="sendRS232TestMessage()">
+            <i class="material-icons left">send</i>An RS-232 senden
+          </button>
+          <span id="rs232TestResult" role="status" aria-live="polite"></span>
+        </div>
+      </div>
       
       <!-- Firmware Info Section (Updates erfolgen automatisch beim Boot) -->
       <div class="card">
@@ -2157,6 +2171,27 @@ void handleRoot() {
         setInterval(updateMonitor, 1000);
         function clearMonitor() {
           fetch('/monitor_clear').then(()=>updateMonitor());
+        }
+
+        function sendRS232TestMessage() {
+          const message = document.getElementById('rs232TestMessage').value;
+          const result = document.getElementById('rs232TestResult');
+          if (!message) {
+            result.textContent = 'Bitte zuerst eine Nachricht eingeben.';
+            return;
+          }
+          fetch('/api/rs232_test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({message})
+          }).then(async response => {
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.message || 'Senden fehlgeschlagen');
+            result.textContent = data.bytes + ' Byte an RS-232 gesendet.';
+            updateMonitor();
+          }).catch(error => {
+            result.textContent = 'Fehler: ' + error.message;
+          });
         }
         
         function updateHardwareInfo() {
@@ -3244,6 +3279,28 @@ bool tryConnectWiFi() {
   }
 }
 
+void handleRS232TestMessage() {
+  if (!server.hasArg("message")) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Nachricht fehlt\"}");
+    return;
+  }
+
+  String message = server.arg("message");
+  if (message.length() == 0 || message.length() > 256) {
+    server.send(400, "application/json", "{\"status\":\"error\",\"message\":\"Nachricht muss 1 bis 256 Zeichen enthalten\"}");
+    return;
+  }
+
+  size_t bytesWritten = RS232.write(
+      reinterpret_cast<const uint8_t *>(message.c_str()), message.length());
+  RS232.flush();
+  if (bytesWritten > 0) {
+    lastTX = millis();
+  }
+  appendMonitor("Web-RS-232-Test: " + String(bytesWritten) + " Bytes direkt gesendet", "INFO");
+  server.send(200, "application/json", "{\"status\":\"success\",\"bytes\":" + String(bytesWritten) + "}");
+}
+
 void startWebserver() {
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
@@ -3253,6 +3310,7 @@ void startWebserver() {
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/clearcrashlogs", HTTP_POST, handleClearCrashLogs);
   server.on("/api/display_brightness", HTTP_POST, handleDisplayBrightness); // Live Display-Helligkeit
+  server.on("/api/rs232_test", HTTP_POST, handleRS232TestMessage);
   // Manual OTA update removed - only boot update available
   server.begin();
 }
