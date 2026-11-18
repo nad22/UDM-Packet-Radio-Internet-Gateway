@@ -151,8 +151,14 @@ Das System arbeitet als **CB-Funk Simulation** mit MQTT:
 ## 🔄 OTA Updates
 
 **Automatisch beim Boot:**
-- Updates werden beim Start automatisch geprüft
+- Updates werden beim Start automatisch geprüft und nur installiert, wenn die
+  Release-Version numerisch neuer ist als die aktuell installierte Version.
+  Ältere Versionen lassen sich nur manuell flashen.
 - Repository: GitHub (`ota/` Verzeichnis)
+
+Für lokale Test-Builds kann `-DUDMPRIG_DISABLE_AUTO_OTA` zu den PlatformIO
+`build_flags` hinzugefügt werden. Dadurch wird der Teststand nicht automatisch
+durch ein Release ersetzt; reguläre Builds behalten die automatische Prüfung.
 
 **Manuell über Web-Interface:**
 - http://udmprig-client.local/
@@ -169,6 +175,22 @@ Das System bietet eine vollständige Web-Konfiguration:
 - **Audio-Einstellungen:** Lautstärke, AFSK-Frequenzen
 - **Display-Kontrolle:** Helligkeit, Typ
 - **Serial Monitor:** Live-Debug-Ausgaben
+
+Beim Start versucht das Gerät die WLAN-Verbindung bis zu dreimal jeweils
+fünf Sekunden lang. Versuch und Ergebnis erscheinen auf dem OLED und im
+seriellen Monitor; nach drei Fehlschlägen startet das Konfigurationsportal.
+Der WLAN-Energiesparmodus bleibt auch nach einem WLAN-Reset deaktiviert.
+
+Unter **Config → Fehlertöne** stehen vier Einstellungen zur Wahl:
+1 = Aus (Standard), 2–4 = drei unterschiedliche Klingeltöne. Die Einstellung
+wird dauerhaft gespeichert und ist auch im Konfigurationsportal verfügbar.
+Bei der Auswahl eines Klingeltons wird eine Hörprobe abgespielt, ohne die
+Einstellung bereits zu speichern.
+Fehler mit Log-Level `ERROR` werden über den MAX98357A ausgegeben; mehrere
+gleichzeitig anstehende Fehler werden zu einem Ton zusammengefasst. Der Ton
+ist unabhängig von der Paket-Audio-Simulation, verwendet aber deren Lautstärke
+und Hardware-Verstärkung. Vor erfolgreicher I2S-Initialisierung oder bei einem
+I2S-Fehler ist keine Tonausgabe möglich.
 
 ### Debug-Ausgaben
 

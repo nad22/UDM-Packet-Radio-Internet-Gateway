@@ -56,6 +56,7 @@
 #include <driver/i2s.h>    // I2S for MAX98357A audio amplifier
 #include <esp_system.h>    // Für esp_reset_reason_t
 #include <driver/ledc.h>   // Für LEDC-Funktionen
+#include "firmware_version_compare.h"
 
 // MQTT configuration - increased buffer size for reliable packet transmission
 #define MQTT_MAX_PACKET_SIZE 1024
@@ -103,6 +104,7 @@
 #define HARDWARE_GAIN_OFFSET 505       // Hardware gain level 0-3 (1 byte)
 #define OLED_SHIFT_INTERVAL_OFFSET 506 // OLED shift interval (minutes, 2 bytes)
 #define OLED_SHIFT_PIXELS_OFFSET 508   // OLED shift distance (pixels, 1 byte)
+#define ERROR_SOUND_OFFSET 509         // Error sound: 1=off, 2-4=melody
 
 // Crash log system storage (EEPROM 510-1023) - MOVED to avoid conflicts
 #define CRASH_LOG_START_OFFSET 510
@@ -230,6 +232,9 @@ uint8_t cbChannel = 1;                  // CB-Funk channel 1-40 (default: channe
 bool packetAudioEnabled = true;         // Packet radio audio simulation enabled
 uint16_t txDelay = 100;                 // TX Delay in milliseconds (PTT to data start, default: 100ms)
 uint8_t audioVolume = 70;               // Audio volume level 0-100% (default: 70%)
+uint8_t errorSound = 1;                 // Error notification sound (1=off)
+bool i2sAudioReady = false;
+bool errorSoundPending = false;
 uint16_t afskFreqMark = 1200;           // AFSK Mark frequency (configurable, default: 1200 Hz)
 uint16_t afskFreqSpace = 2200;          // AFSK Space frequency (configurable, default: 2200 Hz)
 uint8_t hardwareGain = 0;               // Hardware gain level (0=9dB Standard, 1=6dB Niedrig, 2=12dB Hoch)
@@ -361,7 +366,9 @@ void processMqttMessage(const String& message); // MQTT message processing
 String hexToBytes(const String& hexString);   // Hex string to bytes conversion
 
 // Audio system functions
-void setupI2SAudio();                          // Initialize I2S audio system
+bool setupI2SAudio();                          // Initialize I2S audio system
+void playPendingErrorSound();
+bool playErrorSound(uint8_t sound);
 void setupHardwareGain();                      // Initialize hardware gain control
 void setHardwareGain(uint8_t gainLevel);       // Set hardware gain level (0-3)
 void playPacketAudio(const String& hexData, bool isTx); // Play packet radio audio
@@ -390,7 +397,7 @@ void handleDisplayBrightness();                // Display brightness API handler
 void setDisplayBrightness(uint8_t brightness); // Set display brightness level
 
 // Audio system functions
-void setupI2SAudio();                          // Initialize I2S audio system
+bool setupI2SAudio();                          // Initialize I2S audio system
 void setupHardwareGain();                         // Initialize hardware gain control
 void setHardwareGain(uint8_t gainLevel);          // Set hardware gain level (0-3)
 
@@ -1089,6 +1096,7 @@ void saveConfig() {
   EEPROM.write(OLED_SHIFT_INTERVAL_OFFSET, oledShiftIntervalMinutes & 0xFF);
   EEPROM.write(OLED_SHIFT_INTERVAL_OFFSET + 1, (oledShiftIntervalMinutes >> 8) & 0xFF);
   EEPROM.write(OLED_SHIFT_PIXELS_OFFSET, oledShiftPixels);
+  EEPROM.write(ERROR_SOUND_OFFSET, errorSound);
   
   EEPROM.commit();
   Serial.println("Configuration saved successfully to EEPROM");
@@ -1167,6 +1175,7 @@ void loadConfig() {
   cbChannel = 1;
   packetAudioEnabled = true;
   audioVolume = 70;
+  errorSound = 1;
   
   try {
     // Load MQTT configuration
@@ -1190,6 +1199,10 @@ void loadConfig() {
     packetAudioEnabled = (audioSetting == 1 || audioSetting == 0xFF); // 0xFF = uninitialized = enable by default
     
     audioVolume = EEPROM.read(AUDIO_VOLUME_OFFSET); // Load audio volume
+    uint8_t storedErrorSound = EEPROM.read(ERROR_SOUND_OFFSET);
+    if (storedErrorSound >= 1 && storedErrorSound <= 4) {
+      errorSound = storedErrorSound;
+    }
   } catch (...) {
     Serial.println("ERROR: EEPROM MQTT read failed, using defaults");
   }
@@ -1525,6 +1538,42 @@ void setCpuFrequency() {
   // Removed: CPU frequency serial output for better performance
 }
 
+String errorSoundOptions() {
+  String options;
+  for (int i = 1; i <= 4; ++i) {
+    options += "<option value='" + String(i) + "'";
+    if (errorSound == i) options += " selected";
+    options += ">" + String(i == 1 ? "Aus" : ("Klingelton " + String(i - 1))) + "</option>";
+  }
+  return options;
+}
+
+String errorSoundPreviewScript() {
+  return R"=====(
+<script>
+async function previewErrorSound(select) {
+  const status = document.getElementById('errorsound-status');
+  if (select.value === '1') {
+    status.textContent = 'Fehlerton ausgeschaltet. Zum Übernehmen speichern.';
+    return;
+  }
+  status.textContent = 'Hörprobe wird abgespielt …';
+  try {
+    const response = await fetch('/api/error_sound_preview', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'sound=' + encodeURIComponent(select.value)
+    });
+    const message = await response.text();
+    status.textContent = response.ok ? 'Hörprobe abgespielt. Zum Übernehmen speichern.' : message;
+  } catch (error) {
+    status.textContent = 'Hörprobe fehlgeschlagen: Gerät nicht erreichbar.';
+  }
+}
+</script>
+)=====";
+}
+
 void handleRoot() {
   // **CRITICAL FIX**: Watchdog reset vor HTML-Generierung
   esp_task_wdt_reset();
@@ -1543,6 +1592,9 @@ void handleRoot() {
     <meta charset="UTF-8">
     <title>UDMPRIG-Client v)=====";
   html += String(localVersion);
+#ifdef UDMPRIG_TEST_BUILD
+  html += " (Test-Build)";
+#endif
   html += R"=====(</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
@@ -1607,6 +1659,9 @@ void handleRoot() {
   <body>
     <h4><i class="material-icons left">settings_ethernet</i>UDMPRIG-Client v)=====";
   html += String(localVersion);
+#ifdef UDMPRIG_TEST_BUILD
+  html += " (Test-Build)";
+#endif
   html += R"=====(</h4>
     <ul id="tabs-swipe-demo" class="tabs">
       <li class="tab col s4"><a class="active" href="#hardware">Hardware</a></li>
@@ -1616,7 +1671,21 @@ void handleRoot() {
     <div id="config" class="col s12">
       <h5>Konfiguration</h5>
       <form id="configform" action='/save' method='post'>
-        
+
+        <div class="card">
+          <div class="card-content">
+            <span class="card-title"><i class="material-icons left">notifications_active</i>Fehlertöne</span>
+            <label for="errorsound">Fehlerton aktivieren und auswählen</label>
+            <select class="browser-default" id="errorsound" name="errorsound" onchange="previewErrorSound(this)">
+  )=====";
+  html += errorSoundOptions();
+  html += R"=====(
+            </select>
+            <p>Aus deaktiviert den Fehlerton. Klingelton 1–3 aktivieren ihn über den MAX98357A und werden bei der Auswahl abgespielt. Die gemeinsame Audio-Lautstärke gilt auch für Fehlertöne.</p>
+            <p id="errorsound-status" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+
         <!-- WiFi Konfiguration -->
         <div class="card">
           <div class="card-content">
@@ -2100,7 +2169,13 @@ void handleRoot() {
           <p><strong>OTA Repository:</strong><br><small>)=====";
   html += String(otaRepoUrl);
   html += R"=====(</small></p>
-          <p class="grey-text"><i class="material-icons tiny">info</i> Updates werden automatisch beim Boot geprüft und installiert</p>
+  )=====";
+#ifdef UDMPRIG_DISABLE_AUTO_OTA
+  html += R"=====(<p class="grey-text"><i class="material-icons tiny">info</i> Automatische OTA-Updates sind in diesem Test-Build deaktiviert.</p>)=====";
+#else
+  html += R"=====(<p class="grey-text"><i class="material-icons tiny">info</i> Updates werden automatisch beim Boot geprüft und installiert</p>)=====";
+#endif
+  html += R"=====(
         </div>
       </div>
       
@@ -2462,9 +2537,9 @@ void handleRoot() {
 
     </script>
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
-  </body>
-</html>
 )=====";
+  html += errorSoundPreviewScript();
+  html += "</body></html>";
 
   // **CRITICAL FIX**: Watchdog reset vor dem Senden
   esp_task_wdt_reset();
@@ -2476,6 +2551,7 @@ void handleRoot() {
   }
   
   // Normaler Modus: Vollständiges HTML senden
+  server.sendHeader("Cache-Control", "no-store, max-age=0");
   server.send(200, "text/html", html);
 }
 
@@ -2529,20 +2605,36 @@ void sendSimplifiedHTML() {
   html += "<input name='mqttuser' placeholder='MQTT Username' value='" + String(mqttUsername) + "'>";
   html += "<input name='mqttpass' type='password' placeholder='MQTT Password' value='" + String(mqttPassword) + "'>";
   html += "</div>";
+
+  html += "<div class='card'><h3>Fehlertöne</h3><label for='errorsound'>Fehlerton aktivieren und auswählen</label><select id='errorsound' name='errorsound' onchange='previewErrorSound(this)'>";
+  html += errorSoundOptions();
+  html += "</select><p>Klingeltöne werden bei der Auswahl abgespielt. Die gemeinsame Audio-Lautstärke gilt auch für Fehlertöne.</p><p id='errorsound-status' role='status' aria-live='polite'></p></div>";
   
   html += "<button type='submit'>💾 Save & Restart</button>";
   html += "</form>";
   
   html += "<hr><p><small>🌐 Also available at: <strong>http://192.168.4.1/</strong></small></p>";
+  html += errorSoundPreviewScript();
   html += "</body></html>";
   
   esp_task_wdt_reset(); // Watchdog reset nach HTML-Generierung
+  server.sendHeader("Cache-Control", "no-store, max-age=0");
   server.send(200, "text/html", html);
 }
 
 void handleSave() {
   // **CRITICAL FIX**: Watchdog reset bei Config-Speicherung  
   esp_task_wdt_reset();
+
+  if (server.hasArg("errorsound")) {
+    String value = server.arg("errorsound");
+    if (value.length() != 1 || value[0] < '1' || value[0] > '4') {
+      server.send(400, "text/plain", "Ungültiger Fehlerton (1-4)");
+      return;
+    }
+    errorSound = value[0] - '0';
+    if (errorSound == 1) errorSoundPending = false;
+  }
   
   if (server.hasArg("ssid")) strncpy(wifiSsid, server.arg("ssid").c_str(), 63);
   if (server.hasArg("pass")) strncpy(wifiPass, server.arg("pass").c_str(), 63);
@@ -3195,6 +3287,9 @@ void checkWiFiConnection() {
       WiFi.disconnect(true);
       delay(500);
       WiFi.mode(WIFI_STA);
+      if (!WiFi.setSleep(false)) {
+        appendMonitor("WiFi sleep konnte nicht deaktiviert werden", "ERROR");
+      }
       delay(500);
       wifiReconnectAttempts = 0;
     }
@@ -3235,7 +3330,18 @@ void checkWiFiConnection() {
   }
 }
 
-// WiFi connection function (optimized for speed)
+esp_err_t configureTaskWatchdog(uint32_t timeout) {
+  esp_err_t result = esp_task_wdt_init(timeout, true);
+  if (result != ESP_OK) return result;
+
+  result = esp_task_wdt_status(NULL);
+  if (result == ESP_ERR_NOT_FOUND) {
+    result = esp_task_wdt_add(NULL);
+  }
+  if (result != ESP_OK) return result;
+  return esp_task_wdt_reset();
+}
+
 bool tryConnectWiFi() {
   appendMonitor("WLAN connection being established...", "INFO");
   
@@ -3245,38 +3351,44 @@ bool tryConnectWiFi() {
   WiFi.persistent(false);  // No flash writes for faster connection
   
   // Standard WiFi configuration (without aggressive optimizations)
-  WiFi.setSleep(false);    // No WiFi sleep for stability
-  
-  // Direct connection without complex protocol settings
-  WiFi.begin(wifiSsid, wifiPass);
-  
-  // Wait for connection (max 5 seconds for faster boot)
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(250);
-    attempts++;
-    if(attempts % 4 == 0) {  // Status update every second
-      Serial.println("WiFi Verbindung... (" + String(attempts/4) + "s)");
+  if (!WiFi.setSleep(false)) {
+    appendMonitor("WiFi sleep konnte nicht deaktiviert werden", "ERROR");
+  }
+
+  for (int attempt = 1; attempt <= 3; ++attempt) {
+    String status = "WLAN Versuch " + String(attempt) + "/3";
+    bootPrint(status);
+    appendMonitor(status, "INFO");
+    Serial.println(status);
+    WiFi.begin(wifiSsid, wifiPass);
+
+    for (int tick = 0; tick < 20 && WiFi.status() != WL_CONNECTED; ++tick) {
+      delay(250);
+      if ((tick + 1) % 4 == 0) {
+        Serial.println(status + " (" + String((tick + 1) / 4) + "s)");
+      }
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      bootPrint("WLAN verbunden " + String(attempt) + "/3");
+      Serial.println("WLAN erfolgreich verbunden mit " + String(wifiSsid));
+      Serial.println("IP-Adresse: " + WiFi.localIP().toString());
+      Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
+      wifiReconnectAttempts = 0;
+      connectionError = false;
+      return true;
+    }
+
+    bootPrint("WLAN " + String(attempt) + "/3 fehlgeschl.");
+    Serial.println(status + " fehlgeschlagen, Status: " + String(WiFi.status()));
+    appendMonitor(status + " fehlgeschlagen, Status: " + String(WiFi.status()), "INFO");
+    if (attempt < 3) {
+      WiFi.disconnect();
+      delay(250);
     }
   }
-  
-  bool connected = (WiFi.status() == WL_CONNECTED);
-  
-  if (connected) {
-    Serial.println("WLAN erfolgreich verbunden mit " + String(wifiSsid));
-    Serial.println("IP-Adresse: " + WiFi.localIP().toString());
-    Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
-    
-    // Reset-Zähler zurücksetzen
-    wifiReconnectAttempts = 0;
-    connectionError = false;
-    
-    return true;
-  } else {
-    Serial.println("ERROR: WLAN-Verbindung fehlgeschlagen");
-    // Skip saveCrashLog during boot to avoid timeout
-    return false;
-  }
+  appendMonitor("WLAN-Verbindung nach 3 Versuchen fehlgeschlagen", "ERROR");
+  connectionError = true;
+  return false;
 }
 
 void handleRS232TestMessage() {
@@ -3301,6 +3413,23 @@ void handleRS232TestMessage() {
   server.send(200, "application/json", "{\"status\":\"success\",\"bytes\":" + String(bytesWritten) + "}");
 }
 
+void handleErrorSoundPreview() {
+  String value = server.arg("sound");
+  if (value.length() != 1 || value[0] < '2' || value[0] > '4') {
+    server.send(400, "text/plain", "Ungültiger Klingelton (2-4).");
+    return;
+  }
+  if (!i2sAudioReady) {
+    server.send(503, "text/plain", "Hörprobe nicht möglich: Audio-Ausgabe nicht bereit.");
+    return;
+  }
+  if (!playErrorSound(value[0] - '0')) {
+    server.send(500, "text/plain", "Hörprobe fehlgeschlagen: I2S-Ausgabe prüfen.");
+    return;
+  }
+  server.send(200, "text/plain", "Hörprobe abgespielt.");
+}
+
 void startWebserver() {
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
@@ -3311,15 +3440,17 @@ void startWebserver() {
   server.on("/api/clearcrashlogs", HTTP_POST, handleClearCrashLogs);
   server.on("/api/display_brightness", HTTP_POST, handleDisplayBrightness); // Live Display-Helligkeit
   server.on("/api/rs232_test", HTTP_POST, handleRS232TestMessage);
+  server.on("/api/error_sound_preview", HTTP_POST, handleErrorSoundPreview);
   // Manual OTA update removed - only boot update available
   server.begin();
 }
 
 void startConfigPortal() {
   // Watchdog timeout erhöhen für Config-Portal (längere HTML-Generierung)
-  esp_task_wdt_deinit();
-  esp_task_wdt_init(120, true);  // 2 Minuten für Config-Portal
-  esp_task_wdt_add(NULL);
+  esp_err_t wdtResult = configureTaskWatchdog(120);
+  if (wdtResult != ESP_OK) {
+    appendMonitor("Watchdog-Konfiguration für Portal fehlgeschlagen: " + String(wdtResult), "ERROR");
+  }
   
   WiFi.softAP("UDMPRIG-Client");
   IPAddress apip(192,168,4,1);
@@ -3332,6 +3463,7 @@ void startConfigPortal() {
   while (WiFi.status() != WL_CONNECTED) {
     server.handleClient();
     blinkLED();
+    playPendingErrorSound();
     
     // Watchdog regelmäßig zurücksetzen (alle 10 Sekunden)
     if (millis() - lastWatchdogReset > 10000) {
@@ -3348,9 +3480,10 @@ void startConfigPortal() {
   apActive = false;
   
   // Watchdog wieder auf normale Einstellungen zurücksetzen
-  esp_task_wdt_deinit();
-  esp_task_wdt_init(WDT_TIMEOUT, true);
-  esp_task_wdt_add(NULL);
+  wdtResult = configureTaskWatchdog(WDT_TIMEOUT);
+  if (wdtResult != ESP_OK) {
+    appendMonitor("Watchdog-Konfiguration nach Portal fehlgeschlagen: " + String(wdtResult), "ERROR");
+  }
 }
 
 void checkForUpdates() {
@@ -3372,7 +3505,9 @@ void checkForUpdates() {
     String remoteVersion = http.getString();
     remoteVersion.trim();
     appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
-    if(isValidFirmwareVersion(remoteVersion) && remoteVersion != String(localVersion)) {
+    bool remoteValid = isValidFirmwareVersion(remoteVersion);
+    bool localValid = isValidFirmwareVersion(String(localVersion));
+    if(remoteValid && localValid && firmware_version::compare(remoteVersion.c_str(), localVersion) > 0) {
       appendMonitor("OTA: Neue Version gefunden (" + remoteVersion + "), Update wird geladen!", "INFO");
       showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
 
@@ -3443,10 +3578,10 @@ void checkForUpdates() {
         delay(4000);
       }
       return;
-    } else if (!isValidFirmwareVersion(remoteVersion)) {
+    } else if (!remoteValid || !localValid) {
       appendMonitor("OTA: Ungültige Versionsdatei; Update wird übersprungen.", "WARNING");
     } else {
-      appendMonitor("OTA: Firmware aktuell.", "INFO");
+      appendMonitor("OTA: Kein neueres Release; Update wird übersprungen.", "INFO");
     }
   } else {
     appendMonitor("OTA: Fehler beim Versions-Check: " + String(httpCode), "WARNING");
@@ -3477,6 +3612,9 @@ String getTimestamp() {
 }
 
 void appendMonitor(const String& msg, const char* level) {
+  if (strcmp(level, "ERROR") == 0 && errorSound != 1) {
+    errorSoundPending = true;
+  }
   // Log-Level-Filterung
   int msgLevel = 1; // Standard: INFO
   if (strcmp(level, "ERROR") == 0) msgLevel = 0;
@@ -3532,10 +3670,8 @@ void setup() {
   
   // **CRITICAL FIX**: Watchdog früh initialisieren um Boot-Loops zu vermeiden
   Serial.println("Early watchdog init for bootloop protection...");
-  esp_task_wdt_deinit(); // Alte Instanz entfernen
-  esp_err_t wdtResult = esp_task_wdt_init(120, true); // 2 Minuten für Setup
+  esp_err_t wdtResult = configureTaskWatchdog(120); // 2 Minuten für Setup
   if (wdtResult == ESP_OK) {
-    esp_task_wdt_add(NULL);
     Serial.println("Watchdog initialized: 120s timeout for setup");
   } else {
     Serial.println("WARNING: Could not initialize watchdog: " + String(wdtResult));
@@ -3613,7 +3749,13 @@ void setup() {
     saveCrashLog("System rebooted by " + reasonStr + " - Previous session ended unexpectedly");
   }
 
-  // Skip I2S setup during boot - will be initialized later
+  bootPrint("Init Audio I2S...");
+  if (setupI2SAudio()) {
+    bootPrint("Audio I2S bereit");
+    playPendingErrorSound();
+  } else {
+    bootPrint("Audio I2S FEHLER");
+  }
 
   bootPrint("Init RS232 Serial...");
   if (baudrate == 0) {
@@ -3630,6 +3772,7 @@ void setup() {
   Serial.println("WiFi connect took: " + String(millis() - wifiStart) + "ms");
   if (!wifiOk) {
     bootPrint("WLAN fehlgeschlagen!");
+    playPendingErrorSound();
     appendMonitor("Starte Konfigurationsportal...", "WARNING");
     bootPrint("Starte Config-Portal!");
     startConfigPortal();
@@ -3658,32 +3801,26 @@ void setup() {
     appendMonitor("mDNS gestartet als udmprig-client.local", "INFO");
     bootPrint("mDNS OK");
   }
-  // Move OTA check to background - don't block boot
+#ifdef UDMPRIG_DISABLE_AUTO_OTA
+  appendMonitor("Automatisches OTA-Update für Test-Build deaktiviert", "INFO");
+  bootPrint("OTA Test: aus");
+#else
   appendMonitor("Firmware Update-Check wird im Hintergrund ausgeführt", "INFO");
   bootPrint("OTA Check gestartet");
+#endif
   
   appendMonitor("Setup abgeschlossen - Client startet normal", "INFO");
   
   // **KOMPATIBLE VERSION: Hardware Watchdog aktivieren**
   bootPrint("Init Watchdog...");
-  esp_task_wdt_deinit(); // Eventuellen alten Watchdog zurücksetzen
-  
-  // Verwende die ältere API für ESP32 Core 2.x Kompatibilität
-  esp_err_t result = esp_task_wdt_init(WDT_TIMEOUT, true);
+  esp_err_t result = configureTaskWatchdog(WDT_TIMEOUT);
   if (result == ESP_OK) {
-    result = esp_task_wdt_add(NULL);
-    if (result == ESP_OK) {
-      appendMonitor("Hardware Watchdog aktiviert (30s timeout)", "INFO");
-      lastWatchdogReset = millis();
-      bootPrint("Watchdog 30s OK");
-    } else {
-      appendMonitor("Watchdog Task-Add fehlgeschlagen, Code: " + String(result), "WARNING");
-      saveCrashLog("Watchdog task add failed: " + String(result));
-      bootPrint("Watchdog FEHLER");
-    }
+    appendMonitor("Hardware Watchdog aktiviert (" + String(WDT_TIMEOUT) + "s timeout)", "INFO");
+    lastWatchdogReset = millis();
+    bootPrint("Watchdog " + String(WDT_TIMEOUT) + "s OK");
   } else {
-    appendMonitor("Watchdog Init fehlgeschlagen, Code: " + String(result) + " - System läuft ohne Watchdog", "WARNING");
-    saveCrashLog("Watchdog init failed: " + String(result));
+    appendMonitor("Watchdog-Konfiguration fehlgeschlagen, Code: " + String(result), "ERROR");
+    saveCrashLog("Watchdog configuration failed: " + String(result));
     bootPrint("Watchdog FEHLER");
   }
   
@@ -3717,18 +3854,6 @@ void setup() {
   
   delay(1000); // Brief wait after MQTT setup
   esp_task_wdt_reset(); // Watchdog reset vor I2S
-  
-  // Initialize I2S audio system at the very end to avoid slowing down critical boot
-  bootPrint("Init Audio I2S...");
-  unsigned long i2sStart = millis();
-  try {
-    setupI2SAudio();
-    Serial.println("I2S audio setup took: " + String(millis() - i2sStart) + "ms");
-    bootPrint("Audio I2S bereit");
-  } catch (...) {
-    Serial.println("ERROR: I2S audio setup failed, continuing without audio");
-    bootPrint("Audio I2S FEHLER");
-  }
   
   esp_task_wdt_reset(); // Watchdog reset nach I2S
   
@@ -3789,6 +3914,7 @@ void loop() {
     esp_task_wdt_reset(); // Reset watchdog if active
     lastWatchdogReset = now;
   }
+  playPendingErrorSound();
   
   // **WiFi-Verbindungsüberwachung** (SAFE)
   try {
@@ -3805,6 +3931,7 @@ void loop() {
     
     loopCount++;
     
+#ifndef UDMPRIG_DISABLE_AUTO_OTA
     // Background OTA check (only once after 30 seconds of uptime) - **SAFE**
     static bool otaCheckDone = false;
     if (!otaCheckDone && millis() > 30000 && systemReady) {
@@ -3820,6 +3947,7 @@ void loop() {
         otaCheckDone = true; // Prevent retry
       }
     }
+#endif
     
     if (lastLoopCountMeasurement == 0) {
       lastLoopCountMeasurement = now;
@@ -3892,6 +4020,7 @@ void loop() {
     if (freeHeap < 10000) { // Unter 10KB freier Speicher
       appendMonitor("KRITISCH: Wenig freier Speicher! Neustart wird eingeleitet.", "ERROR");
       saveCrashLog("Critical memory shortage - Emergency restart (Heap: " + String(freeHeap) + "B)");
+      playPendingErrorSound();
       delay(1000);
       ESP.restart();
     }
@@ -4304,7 +4433,7 @@ String decryptPayload(const String& encryptedHexPayload) {
  * Configures high-quality audio output for AFSK packet radio simulation
  * Sets up 44.1kHz sample rate with 16-bit resolution for studio-quality sound
  */
-void setupI2SAudio() {
+bool setupI2SAudio() {
   Serial.println("I2S setup starting...");
   unsigned long i2sInternalStart = millis();
   
@@ -4339,7 +4468,7 @@ void setupI2SAudio() {
   if (result != ESP_OK) {
     appendMonitor("I2S Driver Installation failed: " + String(result), "ERROR");
     Serial.println("I2S driver install FAILED with code: " + String(result));
-    return;
+    return false;
   }
   
   unsigned long pinStart = millis();
@@ -4349,7 +4478,8 @@ void setupI2SAudio() {
   if (result != ESP_OK) {
     appendMonitor("I2S Pin Setup failed: " + String(result), "ERROR");
     Serial.println("I2S pin setup FAILED with code: " + String(result));
-    return;
+    i2s_driver_uninstall(I2S_NUM_0);
+    return false;
   }
   
   appendMonitor("I2S Audio für MAX98357A initialisiert", "INFO");
@@ -4357,9 +4487,11 @@ void setupI2SAudio() {
   // Initialize hardware gain pin (this has delays!)
   unsigned long gainStart = millis();
   setupHardwareGain();
+  i2sAudioReady = true;
   Serial.println("Hardware gain setup took: " + String(millis() - gainStart) + "ms");
   
   Serial.println("I2S setup completed in: " + String(millis() - i2sInternalStart) + "ms");
+  return true;
 }
 
 /**
@@ -4427,6 +4559,47 @@ void setHardwareGain(uint8_t gainLevel) {
   if (logLevel >= 3) {
     int pinState = digitalRead(I2S_GAIN_PIN);
     Serial.println("DEBUG: GAIN Pin State = " + String(pinState) + " (Level " + String(gainLevel) + ")");
+  }
+}
+
+bool playErrorSound(uint8_t sound) {
+  static const int melodies[3][5] = {
+    {880, 0, 880, 0, 880},
+    {660, 880, 1100, 0, 1100},
+    {1200, 900, 1200, 900, 600}
+  };
+  int16_t samples[128];
+  float phase = 0.0f;
+  const int amplitude = 15000 * audioVolume / 100;
+  for (int note = 0; note < 5; ++note) {
+    const int frequency = melodies[sound - 2][note];
+    int remaining = I2S_SAMPLE_RATE * (frequency == 0 ? 50 : 100) / 1000;
+    while (remaining > 0) {
+      int count = remaining < 128 ? remaining : 128;
+      for (int i = 0; i < count; ++i) {
+        samples[i] = frequency == 0 ? 0 : (int16_t)(sin(phase) * amplitude);
+        phase += 2.0f * PI * frequency / I2S_SAMPLE_RATE;
+        if (phase >= 2.0f * PI) phase -= 2.0f * PI;
+      }
+      size_t bytesWritten = 0;
+      esp_err_t result = i2s_write(I2S_NUM_0, samples, count * sizeof(samples[0]),
+                                   &bytesWritten, pdMS_TO_TICKS(250));
+      if (result != ESP_OK || bytesWritten != count * sizeof(samples[0])) {
+        Serial.println("Fehlerton I2S-Ausgabe fehlgeschlagen: " + String(result) +
+                       ", Bytes: " + String(bytesWritten));
+        return false;
+      }
+      remaining -= count;
+    }
+  }
+  return true;
+}
+
+void playPendingErrorSound() {
+  if (!errorSoundPending || errorSound == 1 || !i2sAudioReady) return;
+  errorSoundPending = false;
+  if (!playErrorSound(errorSound)) {
+    Serial.println("Fehlerton konnte nicht abgespielt werden.");
   }
 }
 
