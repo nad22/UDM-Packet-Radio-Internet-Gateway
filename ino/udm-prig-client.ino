@@ -1214,9 +1214,9 @@ bool publishMqttMessage(const String& topic, const String& message) {
   bool success = (mqttClient.endMessage() == 1);
   
   /* if(success) {
-    appendMonitor("MQTT Funk TX: " + message, "INFO");
+    appendMonitor("MQTT radio TX: " + message, "INFO");
   } else {
-    appendMonitor("MQTT Funk TX FAILED", "ERROR");
+    appendMonitor("MQTT radio TX FAILED", "ERROR");
   } */
   
   return success;
@@ -1775,7 +1775,7 @@ void handleRoot() {
             <div class="card-content">
               <span class="card-title">Crash Logs</span>
               <div id="crashLogsContainer">
-                <p class="grey-text">Lade Crash Logs...</p>
+                <p class="grey-text">Loading crash logs...</p>
               </div>
               <div class="card-action">
                 <button class="btn orange darken-2 waves-effect waves-light" onclick="clearCrashLogs()">
@@ -1803,7 +1803,7 @@ void handleRoot() {
         <div class="card-content">
           <span class="card-title"><i class="material-icons left">cloud_queue</i>MQTT Status</span>
           <div id="mqttStatusContent">
-            <p><i class="material-icons tiny">refresh</i> Lade MQTT-Informationen...</p>
+            <p><i class="material-icons tiny">refresh</i> Loading MQTT information...</p>
           </div>
         </div>
       </div>
@@ -1812,7 +1812,7 @@ void handleRoot() {
       <div class="card">
         <div class="card-content">
           <span class="card-title"><i class="material-icons left">info</i>Firmware Info</span>
-          <p><strong>Aktuelle Version:</strong> )=====";
+          <p><strong>Current version:</strong> )=====";
   html += String(localVersion);
   html += R"=====(</p>
           <p><strong>OTA Repository:</strong><br><small>)=====";
@@ -2880,7 +2880,7 @@ void startConfigPortal() {
 }
 
 void checkForUpdates() {
-  appendMonitor("DEBUG: checkForUpdates() aufgerufen", "DEBUG");
+  appendMonitor("DEBUG: checkForUpdates() called", "DEBUG");
   if (otaCheckedThisSession) return;
   otaCheckedThisSession = true;
   
@@ -2895,7 +2895,7 @@ void checkForUpdates() {
   if(httpCode == 200) {
     String remoteVersion = http.getString();
     remoteVersion.trim();
-    appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
+    appendMonitor("OTA: Server Version: " + remoteVersion + ", local: " + String(localVersion), "DEBUG");
     if(remoteVersion != String(localVersion)) {
       appendMonitor("OTA: New version found (" + remoteVersion + "), downloading update.", "INFO");
       
@@ -2953,7 +2953,7 @@ void checkForUpdates() {
             delay(4000);
           }
         } else {
-          showOTAUpdateScreen("Leere Firmware!", 0.0);
+          showOTAUpdateScreen("Empty firmware!", 0.0);
           appendMonitor("OTA: Empty firmware file.", "ERROR");
           delay(4000);
         }
@@ -3207,7 +3207,7 @@ void setup() {
   unsigned long i2sStart = millis();
   setupI2SAudio();
   Serial.println("I2S audio setup took: " + String(millis() - i2sStart) + "ms");
-  bootPrint("Audio I2S bereit");
+  bootPrint("Audio I2S ready");
   
   unsigned long setupEnd = millis();
   Serial.println("=== TOTAL SETUP TIME: " + String(setupEnd - setupStart) + "ms ===");
@@ -3216,7 +3216,7 @@ void setup() {
   Serial.println("System fully initialized - flushing boot messages to monitor...");
   flushBootMessages();
   bootPrint("Flushing Messages...");
-  bootPrint("=== SYSTEM BEREIT ===");
+  bootPrint("=== SYSTEM READY ===");
 }
 
 // ==================================================================================
@@ -3321,7 +3321,7 @@ void loop() {
       String wifiStatus = (WiFi.status() == WL_CONNECTED) ? "Connected" : "Disconnected";
       String diagnostics = "Low memory warning: Heap=" + String(freeHeap) + " Stack=" + String(stackFree) + " WiFi=" + wifiStatus;
       saveCrashLog(diagnostics);
-      appendMonitor("WARNUNG: Wenig freier Speicher! " + diagnostics, "WARNING");
+      appendMonitor("WARNING: Low free memory! " + diagnostics, "WARNING");
     }
     
     if (freeHeap < 10000) { // Unter 10KB freier Speicher
@@ -3413,7 +3413,7 @@ void loop() {
   if (RS232.available()) {
     static unsigned long lastRs232Activity = 0;
     if (millis() - lastRs232Activity > 5000) { // Debug only every 5 seconds
-      appendMonitor("RS232 Data empfangen...", "DEBUG");
+      appendMonitor("RS232 data received...", "DEBUG");
       lastRs232Activity = millis();
     }
     
@@ -3453,7 +3453,7 @@ void loop() {
         // TODO: Length-Field aus KISS-Header extrahieren für Validierung
         // Für jetzt: Max-Length-Check als Sicherheit
         if(currentKissLength > 512) {
-          appendMonitor("KISS Frame zu lang - Reset", "ERROR");
+          appendMonitor("KISS frame too long - reset", "ERROR");
           inKissFrame = false;
           kissBuffer = "";
         }
@@ -3464,7 +3464,7 @@ void loop() {
 
 // KISS message completely received and send via MQTT
 void processCompleteKissMessage(const String& kissData) {
-  appendMonitor("KISS Message empfangen: " + String(kissData.length()) + " bytes", "DEBUG");
+  appendMonitor("KISS message received: " + String(kissData.length()) + " bytes", "DEBUG");
   
   if(!isMqttConnected()) {
     appendMonitor("MQTT disconnected - KISS message discarded!", "WARNING");
@@ -3499,12 +3499,12 @@ void processCompleteKissMessage(const String& kissData) {
     
     bool mqttSuccess = publishMqttMessage(mqttBroadcastTopic, mqttMessage);
     if(mqttSuccess) {
-      appendMonitor("MQTT Funk TX: " + String(kissData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
+      appendMonitor("MQTT radio TX: " + String(kissData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
       
       // Play packet radio audio for TX
       playPacketAudio(hexPayload, true);
     } else {
-      appendMonitor("MQTT Funk TX failed", "ERROR");
+      appendMonitor("MQTT radio TX failed", "ERROR");
     }
   } else {
     appendMonitor("MQTT disconnected - KISS message lost", "ERROR");
@@ -3525,7 +3525,7 @@ String hexToBytes(const String& hexString) {
 // Process MQTT message and forward to RS232  
 void processMqttMessage(const String& message) {
   // KRITISCHE DEBUG-AUSGABE
-  appendMonitor(">>> processMqttMessage() aufgerufen <<<", "DEBUG");
+  appendMonitor(">>> processMqttMessage() called <<<", "DEBUG");
   appendMonitor("MQTT message length: " + String(message.length()), "DEBUG");
   
   // Eigene Messageen filtern (Echo-Schutz)
@@ -3545,7 +3545,7 @@ void processMqttMessage(const String& message) {
   }
   
   // JSON parser for incoming MQTT messages
-  appendMonitor("Suche nach payload_hex in MQTT Message...", "DEBUG");
+  appendMonitor("Searching for payload_hex in MQTT message...", "DEBUG");
   int payloadStart = message.indexOf("\"payload_hex\":\"");
   appendMonitor("payloadStart Index: " + String(payloadStart), "DEBUG");
   if(payloadStart != -1) {
@@ -3567,9 +3567,9 @@ void processMqttMessage(const String& message) {
       }
       
       // Hex zu Binärdaten konvertieren 
-      appendMonitor("Vor hexToBytes: hexPayload = " + hexPayload, "DEBUG");
+      appendMonitor("Before hexToBytes: hexPayload = " + hexPayload, "DEBUG");
       String binaryData = hexToBytes(hexPayload);
-      appendMonitor("Nach hexToBytes: binaryData.length() = " + String(binaryData.length()), "DEBUG");
+      appendMonitor("After hexToBytes: binaryData.length() = " + String(binaryData.length()), "DEBUG");
       
       // Debug: Zeige was an RS232 gesendet wird
       String debugHex = "";
@@ -3584,13 +3584,13 @@ void processMqttMessage(const String& message) {
       appendMonitor("=== MQTT->RS232 START ===", "DEBUG");
       appendMonitor("Hex payload length: " + String(hexPayload.length()), "DEBUG");
       appendMonitor("Binary data length: " + String(binaryData.length()), "DEBUG");
-      appendMonitor("DEBUG: Sende 1:1 an RS232: " + debugHex, "DEBUG");
+      appendMonitor("DEBUG: Sending data unchanged to RS232: " + debugHex, "DEBUG");
       
       // Hex-Daten 1:1 an RS232 senden (bereits vollständige KISS-Frames)
       int bytesWritten = RS232.print(binaryData);
       RS232.flush(); // Stelle sicher, dass Daten sofort gesendet werden
       
-      appendMonitor("RS232.print() returnierte: " + String(bytesWritten) + " bytes", "DEBUG");
+      appendMonitor("RS232.print() returned: " + String(bytesWritten) + " bytes", "DEBUG");
       
       // TX-Indikator für Display setzen (wenn Daten erfolgreich gesendet)
       if(bytesWritten > 0) {
@@ -3612,7 +3612,7 @@ void processMqttMessage(const String& message) {
         senderStart += 12;
         int senderEnd = message.indexOf("\"", senderStart);
         if(senderEnd != -1) {
-          senderInfo = " von " + message.substring(senderStart, senderEnd);
+          senderInfo = " from " + message.substring(senderStart, senderEnd);
         }
       }
       
