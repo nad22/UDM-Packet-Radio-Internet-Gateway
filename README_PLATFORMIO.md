@@ -93,9 +93,9 @@ Important build flags:
 
 ```ini
 build_flags = 
-    -DCORE_DEBUG_LEVEL=3
-    -DARDUINO_USB_CDC_ON_BOOT=1
-    -DMQTT_MAX_PACKET_SIZE=1024
+    -DCORE_DEBUG_LEVEL=0
+    -DMQTT_KEEPALIVE=300
+    -O2
 ```
 
 ## 📚 Libraries
@@ -147,6 +147,20 @@ The system simulates **CB radio** using MQTT:
 - **Encryption:** XOR with shared secret
 - **Audio:** Bell 202 AFSK (1200/2200 Hz)
 - **Protocol:** KISS over RS232
+
+Each MQTT PUBLISH contains exactly one complete KISS frame, encoded as hex in
+the existing JSON payload. Frame delimiters, command bytes and KISS escape
+sequences are preserved; frames are not split or combined. The maximum is
+2048 bytes per encoded KISS frame, including both delimiters and escape bytes.
+An oversized serial frame is discarded through the next delimiter and reported
+in the monitor. Invalid or incomplete MQTT payloads and failed writes are
+also reported rather than deliberately forwarding a partial frame.
+
+The RS232 receive buffer is 8192 bytes. Packet-audio playback and serial
+transmission can block packet processing, so sustained bursts, particularly at
+high baud rates, can still overflow finite buffers. Disable packet audio in the
+configuration for high-volume traffic. MQTT uses QoS 0 and does not guarantee
+delivery after a connection loss.
 
 ## 🔄 OTA Updates
 
@@ -201,6 +215,16 @@ Log level can be set in the web interface:
 - **3:** Debug (verbose)
 
 ## 🛠️ Development
+
+### KISS Framing Tests
+
+The host-side tests exercise KISS frame boundaries, size limits, hex
+conversion, and MQTT streaming failures:
+
+```bash
+c++ -std=c++11 -Iinclude test/kiss_framing_test.cpp -o kiss_framing_test
+./kiss_framing_test
+```
 
 ### Increment Version
 

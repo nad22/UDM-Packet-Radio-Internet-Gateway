@@ -53,13 +53,16 @@
 #include <esp_task_wdt.h>
 #include <esp_wifi.h>
 #include <math.h>          // For AFSK mathematics (sin, PI)
+#include <ctype.h>
 #include <driver/i2s.h>    // I2S for MAX98357A audio amplifier
 #include <esp_system.h>    // Für esp_reset_reason_t
 #include <driver/ledc.h>   // Für LEDC-Funktionen
 #include "firmware_version_compare.h"
+#include "kiss_framing.h"
+#include "kiss_hex.h"
+#include "mqtt_publish.h"
 
-// MQTT configuration - increased buffer size for reliable packet transmission
-#define MQTT_MAX_PACKET_SIZE 1024
+// MQTT configuration
 #define MQTT_KEEPALIVE 300
 
 // MQTT client libraries for secure cloud connectivity
@@ -255,11 +258,10 @@ bool mqttConnected = false;              // MQTT connection status
 // - QoS: 0 (Fire-and-forget like real radio)
 String mqttBroadcastTopic = "udmprig/rf/1";  // Dynamic CB-Funk channel (set in setupMqttTopics())
 
-// KISS protocol buffer for clean message separation
-static String kissBuffer = "";          // Buffer for KISS frame assembly
-static bool inKissFrame = false;        // KISS frame parsing state
-static int expectedKissLength = 0;      // Expected KISS frame length
-static int currentKissLength = 0;       // Current KISS frame length
+constexpr size_t MAX_KISS_FRAME_SIZE = 2048; // Includes KISS delimiters and escaped bytes
+constexpr size_t RS232_RX_BUFFER_SIZE = 8192;
+constexpr size_t MAX_MQTT_MESSAGE_SIZE = 2 * MAX_KISS_FRAME_SIZE + 512;
+static kiss::FrameDecoder<MAX_KISS_FRAME_SIZE> kissDecoder;
 
 // ==================================================================================
 // SYSTEM STATE VARIABLES
@@ -402,7 +404,7 @@ void setupHardwareGain();                         // Initialize hardware gain co
 void setHardwareGain(uint8_t gainLevel);          // Set hardware gain level (0-3)
 
 // KISS protocol processing
-void processCompleteKissMessage(const String& kissData);
+void processCompleteKissMessage(const uint8_t* kissData, size_t length);
 
 // ==================================================================================
 // SSL CERTIFICATE AUTHORITY BUNDLE
@@ -1388,10 +1390,21 @@ void setupMqttTopics() {
 void onMqttMessage(int messageSize) {
   String topic = mqttClient.messageTopic();
   String message = "";
-  
-  // Read message content
-  while (mqttClient.available()) {
-    message += (char)mqttClient.read();
+
+  if (messageSize < 0 || static_cast<size_t>(messageSize) > MAX_MQTT_MESSAGE_SIZE ||
+      !message.reserve(messageSize)) {
+    appendMonitor("MQTT RX message too large or insufficient memory: " + String(messageSize), "ERROR");
+    mqttClient.stop();
+    return;
+  }
+
+  while (message.length() < static_cast<size_t>(messageSize)) {
+    int byteRead = mqttClient.read();
+    if (byteRead < 0 || !message.concat(static_cast<char>(byteRead))) {
+      appendMonitor("MQTT RX incomplete: " + String(message.length()) + "/" + String(messageSize), "ERROR");
+      mqttClient.stop();
+      return;
+    }
   }
   
   appendMonitor("MQTT RX: " + topic + " - " + String(messageSize) + " bytes", "INFO");
@@ -1466,17 +1479,14 @@ bool publishMqttMessage(const String& topic, const String& message) {
   
   // Send message (QoS 0 = Fire-and-Forget, no storage)
   // Encryption is handled by calling function
-  mqttClient.beginMessage(topic);
-  mqttClient.print(message);
-  bool success = (mqttClient.endMessage() == 1);
-  
-  /* if(success) {
-    appendMonitor("MQTT radio TX: " + message, "INFO");
-  } else {
-    appendMonitor("MQTT radio TX FAILED", "ERROR");
-  } */
-  
-  return success;
+  mqtt::PublishResult result = mqtt::publishFrame(mqttClient, topic, message.c_str(), message.length());
+  if (result != mqtt::PublishResult::Success) {
+    const char* error = result == mqtt::PublishResult::HeaderFailed ? "header" :
+                        result == mqtt::PublishResult::PayloadFailed ? "payload" : "completion";
+    appendMonitor("MQTT publish failed during " + String(error), "ERROR");
+    return false;
+  }
+  return true;
 }
 
 // MQTT loop handler
@@ -3762,6 +3772,9 @@ void setup() {
     baudrate = 2400;
     appendMonitor("Baud rate was 0; set to 2400.", "WARNING");
   }
+  if (RS232.setRxBufferSize(RS232_RX_BUFFER_SIZE) != RS232_RX_BUFFER_SIZE) {
+    appendMonitor("Failed to allocate RS232 receive buffer", "ERROR");
+  }
   RS232.begin(baudrate, SERIAL_8N1, 16, 17);
   appendMonitor("RS232 initialized at baud rate " + String(baudrate), "INFO");
   bootPrint("RS232 " + String(baudrate) + " OK");
@@ -4132,53 +4145,21 @@ void loop() {
     }
     
     while (RS232.available()) {
-      char c = RS232.read();
-      
-      // KISS Frame Start Detection (FEND = 0xC0)
-      if (c == 0xC0 && !inKissFrame) {
-        inKissFrame = true;
-        kissBuffer = "";
-        kissBuffer += c; // FEND Start-Byte mit einschließen!
-        expectedKissLength = 0;
-        currentKissLength = 1; // Start mit 1 wegen FEND
-        continue;
-      }
-      
-      // KISS Frame End Detection  
-      if (c == 0xC0 && inKissFrame) {
-        inKissFrame = false;
-        kissBuffer += c; // FEND End-Byte mit einschließen!
-        
-        // Vollständige KISS-Message mit FEND-Bytes verarbeiten
-        if(kissBuffer.length() > 2) { // Mindestens C0 XX C0
-          processCompleteKissMessage(kissBuffer);
-        }
-        
-        kissBuffer = "";
-        lastTX = millis(); // TX-Indikator setzen
-        continue;
-      }
-      
-      // characters zum KISS-Buffer hinzufügen (wenn in Frame)
-      if (inKissFrame) {
-        kissBuffer += c;
-        currentKissLength++;
-        
-        // TODO: Length-Field aus KISS-Header extrahieren für Validierung
-        // Für jetzt: Max-Length-Check als Sicherheit
-        if(currentKissLength > 512) {
-          appendMonitor("KISS frame too long - reset", "ERROR");
-          inKissFrame = false;
-          kissBuffer = "";
-        }
+      uint8_t c = static_cast<uint8_t>(RS232.read());
+      auto result = kissDecoder.feed(c);
+      if (result == kiss::FrameDecoder<MAX_KISS_FRAME_SIZE>::Frame) {
+        processCompleteKissMessage(kissDecoder.data(), kissDecoder.size());
+        lastTX = millis();
+      } else if (result == kiss::FrameDecoder<MAX_KISS_FRAME_SIZE>::Overflow) {
+        appendMonitor("KISS frame exceeds " + String(MAX_KISS_FRAME_SIZE) + " bytes; discarding frame", "ERROR");
       }
     }
   }
 }
 
 // KISS message completely received and send via MQTT
-void processCompleteKissMessage(const String& kissData) {
-  appendMonitor("KISS message received: " + String(kissData.length()) + " bytes", "DEBUG");
+void processCompleteKissMessage(const uint8_t* kissData, size_t length) {
+  appendMonitor("KISS message received: " + String(length) + " bytes", "DEBUG");
   
   if(!isMqttConnected()) {
     appendMonitor("MQTT disconnected - KISS message discarded!", "WARNING");
@@ -4188,10 +4169,17 @@ void processCompleteKissMessage(const String& kissData) {
   if(isMqttConnected()) {
     // Encode KISS data as hex string for clean JSON transmission
     String hexPayload = "";
-    for(int i = 0; i < kissData.length(); i++) {
+    if (!hexPayload.reserve(length * 2)) {
+      appendMonitor("Insufficient memory to encode KISS frame", "ERROR");
+      return;
+    }
+    for (size_t i = 0; i < length; i++) {
       char hex[3];
-      sprintf(hex, "%02X", (unsigned char)kissData[i]);
-      hexPayload += hex;
+      kiss::writeHexByte(kissData[i], hex);
+      if (!hexPayload.concat(hex)) {
+        appendMonitor("Failed to encode KISS frame", "ERROR");
+        return;
+      }
     }
     
     // Encrypt payload if shared secret is set
@@ -4200,20 +4188,35 @@ void processCompleteKissMessage(const String& kissData) {
       finalPayload = encryptPayload(hexPayload);
       appendMonitor("Payload encrypted: " + String(finalPayload.length()) + " characters", "DEBUG");
     }
+    if (finalPayload.length() != hexPayload.length()) {
+      appendMonitor("Failed to prepare complete KISS frame payload", "ERROR");
+      return;
+    }
     
-    String mqttMessage = "{";
-    mqttMessage += "\"timestamp\":" + String(millis()) + ",";
-    mqttMessage += "\"callsign\":\"" + String(callsign) + "\",";
-    mqttMessage += "\"type\":\"data\",";
-    mqttMessage += "\"payload_hex\":\"" + finalPayload + "\",";
-    mqttMessage += "\"payload_length\":" + String(kissData.length()) + ",";
-    mqttMessage += "\"rssi\":" + String(WiFi.RSSI()) + ",";
-    mqttMessage += "\"gateway\":\"ESP32-" + String(callsign) + "\"";
-    mqttMessage += "}";
+    String mqttMessage;
+    if (!mqttMessage.reserve(finalPayload.length() + 256)) {
+      appendMonitor("Insufficient memory to build MQTT frame message", "ERROR");
+      return;
+    }
+    char number[24];
+    snprintf(number, sizeof(number), "%lu", static_cast<unsigned long>(millis()));
+    bool complete = mqttMessage.concat("{\"timestamp\":") && mqttMessage.concat(number) &&
+                    mqttMessage.concat(",\"callsign\":\"") && mqttMessage.concat(callsign) &&
+                    mqttMessage.concat("\",\"type\":\"data\",\"payload_hex\":\"") &&
+                    mqttMessage.concat(finalPayload) && mqttMessage.concat("\",\"payload_length\":");
+    snprintf(number, sizeof(number), "%lu", static_cast<unsigned long>(length));
+    complete = complete && mqttMessage.concat(number) && mqttMessage.concat(",\"rssi\":");
+    snprintf(number, sizeof(number), "%ld", static_cast<long>(WiFi.RSSI()));
+    complete = complete && mqttMessage.concat(number) && mqttMessage.concat(",\"gateway\":\"ESP32-") &&
+               mqttMessage.concat(callsign) && mqttMessage.concat("\"}");
+    if (!complete || mqttMessage.length() > MAX_MQTT_MESSAGE_SIZE) {
+      appendMonitor("Failed to build complete MQTT frame message", "ERROR");
+      return;
+    }
     
     bool mqttSuccess = publishMqttMessage(mqttBroadcastTopic, mqttMessage);
     if(mqttSuccess) {
-      appendMonitor("MQTT radio TX: " + String(kissData.length()) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
+      appendMonitor("MQTT radio TX: " + String(length) + " bytes (hex:" + hexPayload.substring(0,16) + "...)", "INFO");
       
       // Play packet radio audio for TX
       playPacketAudio(hexPayload, true);
@@ -4225,13 +4228,13 @@ void processCompleteKissMessage(const String& kissData) {
   }
 }
 
-// Convert hex string to binary data
+// Convert a validated hex string to binary data
 String hexToBytes(const String& hexString) {
   String result = "";
-  for(int i = 0; i < hexString.length(); i += 2) {
-    String hexByte = hexString.substring(i, i + 2);
-    char byte = (char)strtol(hexByte.c_str(), NULL, 16);
-    result += byte;
+  if (!result.reserve(hexString.length() / 2)) return String();
+  for (size_t i = 0; i < hexString.length(); i += 2) {
+    char byte = static_cast<char>(kiss::readHexByte(hexString.c_str() + i));
+    if (!result.concat(byte)) return String();
   }
   return result;
 }
@@ -4267,42 +4270,63 @@ void processMqttMessage(const String& message) {
     int payloadEnd = message.indexOf("\"", payloadStart);
     if(payloadEnd != -1) {
       String hexPayload = message.substring(payloadStart, payloadEnd);
-      
+      if (hexPayload.length() != static_cast<size_t>(payloadEnd - payloadStart) ||
+          hexPayload.length() < 6 || hexPayload.length() > 2 * MAX_KISS_FRAME_SIZE ||
+          hexPayload.length() % 2 != 0) {
+        appendMonitor("MQTT RX error: invalid KISS payload length", "ERROR");
+        return;
+      }
+      for (size_t i = 0; i < hexPayload.length(); ++i) {
+        if (!isxdigit(static_cast<unsigned char>(hexPayload[i]))) {
+          appendMonitor("MQTT RX error: invalid hex character", "ERROR");
+          return;
+        }
+      }
+
       // Decrypt payload if shared secret is configured
       if (strlen(mqttSharedSecret) > 0) {
+        size_t encryptedLength = hexPayload.length();
         hexPayload = decryptPayload(hexPayload);
+        if (hexPayload.length() != encryptedLength) {
+          appendMonitor("MQTT RX error: incomplete decrypted payload", "ERROR");
+          return;
+        }
         appendMonitor("MQTT RX payload decrypted: " + String(hexPayload.length()) + " characters", "DEBUG");
       }
       
-      // Validierung: Hex-String muss gerade Anzahl characters haben
-      if(hexPayload.length() % 2 != 0) {
-        appendMonitor("MQTT RX error: invalid hex string (odd length)", "ERROR");
+      // Hex zu Binärdaten konvertieren 
+      if (logLevel >= 3) appendMonitor("Before hexToBytes: hexPayload = " + hexPayload, "DEBUG");
+      String binaryData = hexToBytes(hexPayload);
+      if (binaryData.length() != hexPayload.length() / 2 ||
+          !kiss::isSingleFrame(reinterpret_cast<const uint8_t*>(binaryData.c_str()), binaryData.length())) {
+        appendMonitor("MQTT RX error: incomplete KISS frame", "ERROR");
         return;
       }
-      
-      // Hex zu Binärdaten konvertieren 
-      appendMonitor("Before hexToBytes: hexPayload = " + hexPayload, "DEBUG");
-      String binaryData = hexToBytes(hexPayload);
       appendMonitor("After hexToBytes: binaryData.length() = " + String(binaryData.length()), "DEBUG");
       
-      // Debug: Zeige was an RS232 gesendet wird
-      String debugHex = "";
-      for(int i = 0; i < binaryData.length(); i++) {
-        char hex[3];
-        sprintf(hex, "%02X", (unsigned char)binaryData[i]);
-        debugHex += hex;
-        if(i < binaryData.length()-1) debugHex += " ";
+      if (logLevel >= 3) {
+        String debugHex = "";
+        for (size_t i = 0; i < binaryData.length(); i++) {
+          char hex[3];
+          kiss::writeHexByte(static_cast<uint8_t>(binaryData[i]), hex);
+          debugHex += hex;
+          if (i + 1 < binaryData.length()) debugHex += " ";
+        }
+        appendMonitor("DEBUG: Sending data unchanged to RS232: " + debugHex, "DEBUG");
       }
       
       // KRITISCHE DEBUG-AUSGABEN - IMMER ANZEIGEN
       appendMonitor("=== MQTT->RS232 START ===", "DEBUG");
       appendMonitor("Hex payload length: " + String(hexPayload.length()), "DEBUG");
       appendMonitor("Binary data length: " + String(binaryData.length()), "DEBUG");
-      appendMonitor("DEBUG: Sending data unchanged to RS232: " + debugHex, "DEBUG");
       
       // Hex-Daten 1:1 an RS232 senden (bereits vollständige KISS-Frames)
-      int bytesWritten = RS232.print(binaryData);
+      size_t bytesWritten = RS232.write(reinterpret_cast<const uint8_t*>(binaryData.c_str()), binaryData.length());
       RS232.flush(); // Stelle sicher, dass Daten sofort gesendet werden
+      if (bytesWritten != binaryData.length()) {
+        appendMonitor("RS232 write incomplete: " + String(bytesWritten) + "/" + String(binaryData.length()), "ERROR");
+        return;
+      }
       
       appendMonitor("RS232.print() returned: " + String(bytesWritten) + " bytes", "DEBUG");
       
@@ -4315,9 +4339,10 @@ void processMqttMessage(const String& message) {
       appendMonitor("=== MQTT->RS232 END ===", "DEBUG");
       
       // Packet Radio Audio für RX abspielen (mit Original-Hex vor Entschlüsselung)
-      String originalHex = message.substring(message.indexOf("\"payload_hex\":\"") + 15);
-      originalHex = originalHex.substring(0, originalHex.indexOf("\""));
-      playPacketAudio(originalHex, false);
+      if (packetAudioEnabled) {
+        String originalHex = message.substring(payloadStart, payloadEnd);
+        playPacketAudio(originalHex, false);
+      }
       
       // Sender-Info für Monitor extrahieren
       String senderInfo = "";
@@ -4332,6 +4357,8 @@ void processMqttMessage(const String& message) {
       
       appendMonitor("MQTT→RS232: " + String(binaryData.length()) + " bytes" + senderInfo + " (hex:" + hexPayload.substring(0,16) + "...)", "DEBUG");
       lastRX = millis();
+    } else {
+      appendMonitor("MQTT RX error: unterminated payload_hex", "ERROR");
     }
   } else {
     appendMonitor("MQTT RX: payload_hex not found", "WARNING");
@@ -4354,74 +4381,26 @@ void blinkLED() {
 // MQTT PAYLOAD ENCRYPTION FUNCTIONS
 // ==================================================================================
 
-/**
- * Encrypt MQTT payload using XOR cipher with shared secret
- * Provides basic payload obfuscation for CB-Funk simulation
- * @param hexPayload Hex-encoded payload to encrypt
- * @return Encrypted hex string, or original if no secret configured
- */
+// XOR is symmetric; callers supply validated, even-length hex.
 String encryptPayload(const String& hexPayload) {
   if (strlen(mqttSharedSecret) == 0) {
-    return hexPayload; // No encryption if no secret is set
+    return hexPayload;
   }
-  
-  if (hexPayload.length() % 2 != 0) {
-    return hexPayload; // Invalid hex length, return original
-  }
-  
-  String encrypted = "";
-  int secretLen = strlen(mqttSharedSecret);
-  int charIndex = 0;
-  
-  // Hex-String zu Bytes konvertieren, XOR anwenden, zurück zu Hex
-  for (int i = 0; i < hexPayload.length(); i += 2) {
-    String hexByte = hexPayload.substring(i, i + 2);
-    char originalChar = (char)strtol(hexByte.c_str(), NULL, 16);
-    char encryptedChar = originalChar ^ mqttSharedSecret[charIndex % secretLen];
-    
-    // Zurück zu Hex mit führender Null falls nötig
+  String encrypted;
+  if (hexPayload.length() % 2 != 0 || !encrypted.reserve(hexPayload.length())) return String();
+  size_t secretLen = strlen(mqttSharedSecret);
+  for (size_t i = 0; i < hexPayload.length(); i += 2) {
+    uint8_t original = kiss::readHexByte(hexPayload.c_str() + i);
+    uint8_t encryptedByte = original ^ static_cast<uint8_t>(mqttSharedSecret[(i / 2) % secretLen]);
     char hexStr[3];
-    sprintf(hexStr, "%02X", (unsigned char)encryptedChar);
-    encrypted += String(hexStr);
-    charIndex++;
+    kiss::writeHexByte(encryptedByte, hexStr);
+    if (!encrypted.concat(hexStr)) return String();
   }
-  
   return encrypted;
 }
 
-/**
- * Decrypt MQTT payload using XOR cipher with shared secret
- * Reverses the encryption process for received messages
- * @param encryptedHexPayload Encrypted hex-encoded payload
- * @return Decrypted hex string, or original if no secret configured
- */
 String decryptPayload(const String& encryptedHexPayload) {
-  if (strlen(mqttSharedSecret) == 0) {
-    return encryptedHexPayload; // No decryption if no secret is set
-  }
-  
-  if (encryptedHexPayload.length() % 2 != 0) {
-    return encryptedHexPayload; // Invalid hex length, return original
-  }
-  
-  String decrypted = "";
-  int secretLen = strlen(mqttSharedSecret);
-  int charIndex = 0;
-  
-  // Convert hex string to bytes, apply XOR, back to hex
-  for (int i = 0; i < encryptedHexPayload.length(); i += 2) {
-    String hexByte = encryptedHexPayload.substring(i, i + 2);
-    char encryptedChar = (char)strtol(hexByte.c_str(), NULL, 16);
-    char decryptedChar = encryptedChar ^ mqttSharedSecret[charIndex % secretLen];
-    
-    // Back to hex with leading zero if needed
-    char hexStr[3];
-    sprintf(hexStr, "%02X", (unsigned char)decryptedChar);
-    decrypted += String(hexStr);
-    charIndex++;
-  }
-  
-  return decrypted;
+  return encryptPayload(encryptedHexPayload);
 }
 
 // ==================================================================================
