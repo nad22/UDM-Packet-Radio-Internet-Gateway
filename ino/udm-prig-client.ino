@@ -216,7 +216,7 @@ uint16_t txDelay = 100;                 // TX Delay in milliseconds (PTT to data
 uint8_t audioVolume = 70;               // Audio volume level 0-100% (default: 70%)
 uint16_t afskFreqMark = 1200;           // AFSK Mark frequency (configurable, default: 1200 Hz)
 uint16_t afskFreqSpace = 2200;          // AFSK Space frequency (configurable, default: 2200 Hz)
-uint8_t hardwareGain = 0;               // Hardware gain level (0=9dB Standard, 1=6dB Niedrig, 2=12dB Hoch)
+uint8_t hardwareGain = 0;               // Hardware gain level (0=9dB Standard, 1=6dB Low, 2=12dB High)
 
 // ==================================================================================
 // MQTT CLIENT OBJECTS
@@ -1014,7 +1014,7 @@ void loadConfig() {
   txDelay = ((uint16_t)EEPROM.read(TX_DELAY_OFFSET)) | ((uint16_t)EEPROM.read(TX_DELAY_OFFSET+1) << 8);
   if (txDelay == 0xFFFF || txDelay == 0 || txDelay > 5000) {
     txDelay = 100; // Default 100ms if invalid
-    addBootMessage("TX Delay war ungültig, auf 100ms gesetzt", "WARNING");
+    addBootMessage("TX delay was invalid; set to 100ms", "WARNING");
   }
   
   // Load AFSK frequencies (2 bytes each, little endian)
@@ -1030,12 +1030,12 @@ void loadConfig() {
   bool configChanged = false;
   if (afskFreqMark == 0xFFFF || afskFreqMark == 0 || afskFreqMark > 5000) {
     afskFreqMark = 1200; // Default Bell 202 Mark frequency
-    addBootMessage("AFSK Mark-Frequenz war ungültig (" + String(afskFreqMark) + "), auf 1200Hz gesetzt", "WARNING");
+    addBootMessage("AFSK mark frequency was invalid (" + String(afskFreqMark) + "); set to 1200Hz", "WARNING");
     configChanged = true;
   }
   if (afskFreqSpace == 0xFFFF || afskFreqSpace == 0 || afskFreqSpace > 5000) {
     afskFreqSpace = 2200; // Default Bell 202 Space frequency
-    addBootMessage("AFSK Space-Frequenz war ungültig (" + String(afskFreqSpace) + "), auf 2200Hz gesetzt", "WARNING");
+    addBootMessage("AFSK space frequency was invalid (" + String(afskFreqSpace) + "); set to 2200Hz", "WARNING");
     configChanged = true;
   }
   
@@ -1045,7 +1045,7 @@ void loadConfig() {
   
   if (hardwareGain > 2 || hardwareGain == 0xFF) {
     hardwareGain = 0; // Default to 9dB if invalid
-    addBootMessage("Hardware-Verstärkung war ungültig (" + String(hardwareGain) + "), auf 9dB gesetzt", "WARNING");
+    addBootMessage("Hardware gain was invalid (" + String(hardwareGain) + "); set to 9dB", "WARNING");
     configChanged = true;
   }
   
@@ -1057,14 +1057,14 @@ void loadConfig() {
   
   if(baudrate == 0xFFFFFFFF || baudrate == 0x00000000) {
     baudrate = 2400;
-    addBootMessage("Baudrate war ungültig, auf 2400 gesetzt", "WARNING");
+    addBootMessage("Baud rate was invalid; set to 2400", "WARNING");
   }
   if(logLevel > 3) logLevel = 1;
   if(displayType > 1) displayType = DISPLAY_SSD1306;  // Default to SSD1306 for invalid value
   if(strlen(wifiSsid) == 0) addBootMessage("WiFi SSID is empty!", "WARNING");
   if(strlen(otaRepoUrl) == 0) {
     strcpy(otaRepoUrl, "https://raw.githubusercontent.com/nad22/UDM-Packet-Radio-Internet-Gateway/main/ota");
-    addBootMessage("OTA URL war leer, Standard gesetzt", "WARNING");
+    addBootMessage("OTA URL was empty; default applied", "WARNING");
   }
   if(strlen(localVersion) == 0 || localVersion[0] == 0xFF) {
     strcpy(localVersion, "1.0.1");
@@ -1253,7 +1253,7 @@ bool isMqttConnected() {
     if (connected) {
       //appendMonitor("MQTT Status: VERBUNDEN (" + String(mqttBroker) + ")", "INFO");
     } else {
-      appendMonitor("MQTT Status: NICHT VERBUNDEN (Broker: " + String(mqttBroker) + ")", "WARNING");
+      appendMonitor("MQTT status: DISCONNECTED (Broker: " + String(mqttBroker) + ")", "WARNING");
     }
     lastState = connected;
     lastLog = millis();
@@ -1360,32 +1360,32 @@ void handleRoot() {
       <li class="tab col s4"><a href="#monitor">Monitor</a></li>
     </ul>
     <div id="config" class="col s12">
-      <h5>Konfiguration</h5>
+      <h5>Configuration</h5>
       <form id="configform" action='/save' method='post'>
         
-        <!-- WiFi Konfiguration -->
+        <!-- WiFi Configuration -->
         <div class="card">
           <div class="card-content">
-            <span class="card-title"><i class="material-icons left">wifi</i>WiFi Konfiguration</span>
+            <span class="card-title"><i class="material-icons left">wifi</i>WiFi Configuration</span>
             <div class="input-field custom-row">
               <input id="ssid" name="ssid" type="text" maxlength="63" value=")=====";
   html += String(wifiSsid);
   html += R"=====(">
-              <label for="ssid" class="active">WLAN SSID</label>
+              <label for="ssid" class="active">WiFi SSID</label>
             </div>
             <div class="input-field custom-row">
               <input id="pass" name="pass" type="password" maxlength="63" value=")=====";
   html += String(wifiPass);
   html += R"=====(">
-              <label for="pass" class="active">WLAN Passwort</label>
+              <label for="pass" class="active">WiFi Password</label>
             </div>
           </div>
         </div>
         
-        <!-- Packet Radio Konfiguration -->
+        <!-- Packet Radio Configuration -->
         <div class="card">
           <div class="card-content">
-            <span class="card-title"><i class="material-icons left">radio</i>Packet Radio Konfiguration</span>
+            <span class="card-title"><i class="material-icons left">radio</i>Packet Radio Configuration</span>
             <div class="input-field custom-row">
               <input id="callsign" name="callsign" type="text" maxlength="31" value=")=====";
   html += String(callsign);
@@ -1423,13 +1423,13 @@ void handleRoot() {
     html += "</option>";
   }
   html += R"=====(</select>
-              <label for="cbchannel">CB-Funk Kanal</label>
-              <span class="helper-text">CB Funk Kanal 1-40 für MQTT Broadcast</span>
+              <label for="cbchannel">CB Radio Channel</label>
+              <span class="helper-text">CB radio channel 1-40 for MQTT broadcast</span>
             </div>
           </div>
         </div>
         
-        <!-- Packet Radio Audio Konfiguration -->
+        <!-- Packet Radio Audio Configuration -->
         <div class="card">
           <div class="card-content">
             <span class="card-title"><i class="material-icons left">volume_up</i>Packet Radio Audio</span>
@@ -1437,106 +1437,106 @@ void handleRoot() {
               <select id="packetaudio" name="packetaudio">
                 <option value="1")=====";
   if(packetAudioEnabled) html += " selected";
-  html += R"=====(>Aktiviert</option>
+  html += R"=====(>Enabled</option>
                 <option value="0")=====";
   if(!packetAudioEnabled) html += " selected";
-  html += R"=====(>Deaktiviert</option>
+  html += R"=====(>Disabled</option>
               </select>
               <label for="packetaudio">1200 Baud Audio Simulation</label>
-              <span class="helper-text">I2S-AFSK Audio über MAX98357A (Pins 25/26/27). Studio-Qualität Bell 202 Sound!</span>
+              <span class="helper-text">I2S AFSK audio through MAX98357A (pins 25/26/27). Bell 202 sound.</span>
             </div>
             <div class="input-field custom-row">
               <select id="audiovolume" name="audiovolume">
                 <option value="10")=====";
   if(audioVolume >= 5 && audioVolume <= 15) html += " selected";
-  html += R"=====(>10% (Sehr leise)</option>
+  html += R"=====(>10% (Very quiet)</option>
                 <option value="20")=====";
   if(audioVolume >= 15 && audioVolume <= 25) html += " selected";
-  html += R"=====(>20% (Leise)</option>
+  html += R"=====(>20% (Quiet)</option>
                 <option value="30")=====";
   if(audioVolume >= 25 && audioVolume <= 35) html += " selected";
-  html += R"=====(>30% (Niedrig)</option>
+  html += R"=====(>30% (Low)</option>
                 <option value="40")=====";
   if(audioVolume >= 35 && audioVolume <= 45) html += " selected";
-  html += R"=====(>40% (Mittel-leise)</option>
+  html += R"=====(>40% (Medium-quiet)</option>
                 <option value="50")=====";
   if(audioVolume >= 45 && audioVolume <= 55) html += " selected";
   html += R"=====(>50% (Normal)</option>
                 <option value="60")=====";
   if(audioVolume >= 55 && audioVolume <= 65) html += " selected";
-  html += R"=====(>60% (Mittel)</option>
+  html += R"=====(>60% (Medium)</option>
                 <option value="70")=====";
   if(audioVolume >= 65 && audioVolume <= 75) html += " selected";
-  html += R"=====(>70% (Mittel-laut)</option>
+  html += R"=====(>70% (Medium-loud)</option>
                 <option value="80")=====";
   if(audioVolume >= 75 && audioVolume <= 85) html += " selected";
-  html += R"=====(>80% (Laut)</option>
+  html += R"=====(>80% (Loud)</option>
                 <option value="90")=====";
   if(audioVolume >= 85 && audioVolume <= 95) html += " selected";
-  html += R"=====(>90% (Sehr laut)</option>
+  html += R"=====(>90% (Very loud)</option>
                 <option value="100")=====";
   if(audioVolume >= 95) html += " selected";
   html += R"=====(>100% (Maximum)</option>
               </select>
-              <label for="audiovolume">Audio-Lautstärke</label>
+              <label for="audiovolume">Audio volume</label>
             </div>
             <div class="input-field custom-row">
               <input id="freqmark" name="freqmark" type="number" min="300" max="5000" value=")=====";
   html += String(afskFreqMark);
   html += R"=====(">
-              <label for="freqmark">AFSK Mark-Frequenz (Hz)</label>
-              <span class="helper-text">Frequenz für logische "1" (Bell 202 Standard: 1200Hz)</span>
+              <label for="freqmark">AFSK mark frequency (Hz)</label>
+              <span class="helper-text">Frequency for logical "1" (Bell 202 Standard: 1200Hz)</span>
             </div>
             <div class="input-field custom-row">
               <input id="freqspace" name="freqspace" type="number" min="300" max="5000" value=")=====";
   html += String(afskFreqSpace);
   html += R"=====(">
-              <label for="freqspace">AFSK Space-Frequenz (Hz)</label>
-              <span class="helper-text">Frequenz für logische "0" (Bell 202 Standard: 2200Hz)</span>
+              <label for="freqspace">AFSK space frequency (Hz)</label>
+              <span class="helper-text">Frequency for logical "0" (Bell 202 Standard: 2200Hz)</span>
             </div>
             <div class="input-field custom-row">
               <select id="hardwaregain" name="hardwaregain">
                 <option value="1")=====";
   if(hardwareGain == 1) html += " selected";
-  html += R"=====(>6dB (Niedrig)</option>
+  html += R"=====(>6dB (Low)</option>
                 <option value="0")=====";
   if(hardwareGain == 0) html += " selected";
   html += R"=====(>9dB (Standard)</option>
                 <option value="2")=====";
   if(hardwareGain == 2) html += " selected";
-  html += R"=====(>12dB (Hoch)</option>
+  html += R"=====(>12dB (High)</option>
               </select>
-              <label for="hardwaregain">Hardware-Verstärkung</label>
-              <span class="helper-text">Hardware-Gain am MAX98357A (GPIO33). Zusätzlich zur Software-Lautstärke!</span>
+              <label for="hardwaregain">Hardware gain</label>
+              <span class="helper-text">MAX98357A hardware gain (GPIO33), in addition to software volume.</span>
             </div>
             <div class="input-field custom-row">
               <select id="txdelay" name="txdelay">
                 <option value="50")=====";
   if(txDelay >= 40 && txDelay <= 60) html += " selected";
-  html += R"=====(>50ms (Sehr schnell)</option>
+  html += R"=====(>50ms (Very fast)</option>
                 <option value="100")=====";
   if(txDelay >= 80 && txDelay <= 120) html += " selected";
-  html += R"=====(>100ms (Schnell)</option>
+  html += R"=====(>100ms (Fast)</option>
                 <option value="200")=====";
   if(txDelay >= 180 && txDelay <= 220) html += " selected";
-  html += R"=====(>200ms (Mittel)</option>
+  html += R"=====(>200ms (Medium)</option>
                 <option value="300")=====";
   if(txDelay >= 280 && txDelay <= 320) html += " selected";
   html += R"=====(>300ms (Standard)</option>
                 <option value="500")=====";
   if(txDelay >= 480 && txDelay <= 520) html += " selected";
-  html += R"=====(>500ms (Langsam)</option>
+  html += R"=====(>500ms (Slow)</option>
               </select>
-              <label for="txdelay">TX Delay (PTT→Daten)</label>
-              <span class="helper-text">Zeit zwischen PTT-Aktivierung und Datenbeginn. Wichtig für Squelch-Öffnung und TX-Umschaltung!</span>
+              <label for="txdelay">TX Delay (PTT to data)</label>
+              <span class="helper-text">Time between PTT activation and data transmission; allows squelch and TX switching to settle.</span>
             </div>
           </div>
         </div>
         
-        <!-- MQTT Konfiguration -->
+        <!-- MQTT Configuration -->
         <div class="card">
           <div class="card-content">
-            <span class="card-title"><i class="material-icons left">cloud</i>MQTT Konfiguration</span>
+            <span class="card-title"><i class="material-icons left">cloud</i>MQTT Configuration</span>
             <div class="input-field custom-row">
               <input type="text" id="mqttbroker" name="mqttbroker" maxlength="63" value=")=====";
   html += String(mqttBroker);
@@ -1566,12 +1566,12 @@ void handleRoot() {
   html += String(mqttSharedSecret);
   html += R"=====(">
               <label for="mqttsharedsecret" class="active">MQTT Shared Secret</label>
-              <span class="helper-text">Für Payload-Verschlüsselung (leer = keine Verschlüsselung)</span>
+              <span class="helper-text">For payload encryption (empty = no encryption)</span>
             </div>
           </div>
         </div>
         
-        <!-- Display & System Konfiguration -->
+        <!-- Display & System Configuration -->
         <div class="card">
           <div class="card-content">
             <span class="card-title"><i class="material-icons left">settings</i>Display & System</span>
@@ -1579,12 +1579,12 @@ void handleRoot() {
               <select id="displaytype" name="displaytype">
                 <option value="1")=====";
   if(displayType==DISPLAY_SSD1306) html += " selected";
-  html += R"=====(>SSD1306 (kleines Display)</option>
+  html += R"=====(>SSD1306 (small display)</option>
                 <option value="0")=====";
   if(displayType==DISPLAY_SH1106G) html += " selected";
-  html += R"=====(>SH1106G (großes Display)</option>
+  html += R"=====(>SH1106G (large display)</option>
               </select>
-              <label for="displaytype">Display-Typ</label>
+              <label for="displaytype">Display type</label>
             </div>
             <div class="input-field custom-row">
               <select id="displaybrightness" name="displaybrightness">
@@ -1593,21 +1593,21 @@ void handleRoot() {
   html += R"=====(>1% (Minimal)</option>
                 <option value="51")=====";
   if(displayBrightness >= 46 && displayBrightness <= 55) html += " selected";
-  html += R"=====(>20% (Sehr dunkel)</option>
+  html += R"=====(>20% (Very dim)</option>
                 <option value="102")=====";
   if(displayBrightness >= 97 && displayBrightness <= 107) html += " selected";
-  html += R"=====(>40% (Dunkel)</option>
+  html += R"=====(>40% (Dim)</option>
                 <option value="153")=====";
   if(displayBrightness >= 148 && displayBrightness <= 158) html += " selected";
   html += R"=====(>60% (Normal)</option>
                 <option value="204")=====";
   if(displayBrightness >= 199 && displayBrightness <= 209) html += " selected";
-  html += R"=====(>80% (Hell)</option>
+  html += R"=====(>80% (Bright)</option>
                 <option value="255")=====";
   if(displayBrightness >= 250) html += " selected";
   html += R"=====(>100% (Maximum)</option>
               </select>
-              <label for="displaybrightness">Display-Helligkeit</label>
+              <label for="displaybrightness">Display brightness</label>
             </div>
             <div class="input-field custom-row">
               <select id="loglevel" name="loglevel">
@@ -1633,12 +1633,12 @@ void handleRoot() {
   html += R"=====(>240 MHz (Standard)</option>
                 <option value="1")=====";
   if(cpuFrequency==1) html += " selected";
-  html += R"=====(>160 MHz (Reduziert)</option>
+  html += R"=====(>160 MHz (Reduced)</option>
                 <option value="2")=====";
   if(cpuFrequency==2) html += " selected";
-  html += R"=====(>80 MHz (Energiesparen)</option>
+  html += R"=====(>80 MHz (Power saving)</option>
               </select>
-              <label for="cpufreq">CPU-Frequenz</label>
+              <label for="cpufreq">CPU frequency</label>
             </div>
           </div>
         </div>
@@ -1656,19 +1656,19 @@ void handleRoot() {
           </div>
         </div>
         
-        <button class="btn waves-effect waves-light teal" type="submit" id="savebtn">Speichern
+        <button class="btn waves-effect waves-light teal" type="submit" id="savebtn">Save
           <i class="material-icons right">save</i>
         </button>
       </form>
       
       <div class="section">
         (c) www.pukepals.com, 73 de AT1NAD
-        <br><small>Auch erreichbar unter: <b>http://udmprig-client.local/</b></small>
+        <br><small>Also available at: <b>http://udmprig-client.local/</b></small>
       </div>
       <!-- Modal Structure -->
       <div id="restartModal" class="modal">
         <div class="modal-content">
-          <h5>Client wird neu gestartet</h5>
+          <h5>Client is restarting</h5>
           <div class="preloader-wrapper big active" id="spinner">
             <div class="spinner-layer spinner-blue-only">
               <div class="circle-clipper left">
@@ -1681,7 +1681,7 @@ void handleRoot() {
             </div>
           </div>
           <div id="restartMsg">
-            <p>Bitte warten...</p>
+            <p>Please wait...</p>
           </div>
         </div>
       </div>
@@ -1779,7 +1779,7 @@ void handleRoot() {
               </div>
               <div class="card-action">
                 <button class="btn orange darken-2 waves-effect waves-light" onclick="clearCrashLogs()">
-                  <i class="material-icons left">clear_all</i>Crash Logs löschen
+                  <i class="material-icons left">clear_all</i>Clear crash logs
                 </button>
               </div>
             </div>
@@ -1789,9 +1789,9 @@ void handleRoot() {
           <div class="card">
             <div class="card-content">
               <span class="card-title">System Control</span>
-              <p>ESP32 neustarten für Wartung oder bei Problemen.</p>
+              <p>Restart the ESP32 for maintenance or troubleshooting.</p>
               <button class="btn red waves-effect waves-light" onclick="rebootSystem()">
-                <i class="material-icons left">restart_alt</i>System Neustart
+                <i class="material-icons left">restart_alt</i>System restart
               </button>
             </div>
           </div>
@@ -1818,7 +1818,7 @@ void handleRoot() {
           <p><strong>OTA Repository:</strong><br><small>)=====";
   html += String(otaRepoUrl);
   html += R"=====(</small></p>
-          <p class="grey-text"><i class="material-icons tiny">info</i> Updates werden automatisch beim Boot geprüft und installiert</p>
+          <p class="grey-text"><i class="material-icons tiny">info</i> Updates are checked automatically at boot and installed only if newer.</p>
         </div>
       </div>
       
@@ -1831,9 +1831,9 @@ void handleRoot() {
     </div>
     
     <div id="monitor" class="col s12">
-      <h6>Serieller Monitor</h6>
+      <h6>Serial Monitor</h6>
       <pre id="monitorArea" style="overflow:auto;resize:vertical;border:1px solid #ccc;padding:10px;"></pre>
-      <button class="btn red" onclick="clearMonitor()">Leeren</button>
+      <button class="btn red" onclick="clearMonitor()">Clear</button>
       <script>
         document.addEventListener('DOMContentLoaded', function() {
           var el = document.querySelectorAll('.tabs');
@@ -1960,24 +1960,24 @@ void handleRoot() {
               let mqttHtml = '<div class="row">';
               mqttHtml += '<div class="col s6">';
               mqttHtml += '<p><strong>Status:</strong> <span class="' + statusClass + '"><i class="material-icons tiny">' + statusIcon + '</i> ' + connectionStatus + '</span></p>';
-              mqttHtml += '<p><strong>Broker:</strong> ' + (mqttStatus.broker || 'Nicht konfiguriert') + '</p>';
+              mqttHtml += '<p><strong>Broker:</strong> ' + (mqttStatus.broker || 'Not configured') + '</p>';
               mqttHtml += '<p><strong>Port:</strong> ' + mqttStatus.port + '</p>';
-              mqttHtml += '<p><strong>Username:</strong> ' + (mqttStatus.username || 'Nicht gesetzt') + '</p>';
+              mqttHtml += '<p><strong>Username:</strong> ' + (mqttStatus.username || 'Not set') + '</p>';
               mqttHtml += '</div>';
               mqttHtml += '<div class="col s6">';
-              mqttHtml += '<p><strong>CB-Kanal:</strong> ' + String(mqttStatus.cbChannel).padStart(2, '0') + '</p>';
+              mqttHtml += '<p><strong>CB channel:</strong> ' + String(mqttStatus.cbChannel).padStart(2, '0') + '</p>';
               mqttHtml += '<p><strong>MQTT Topic:</strong> <span style="font-family: monospace; font-size: 14px;">' + mqttStatus.topic + '</span></p>';
-              mqttHtml += '<p><strong>Verbindung:</strong> ' + mqttStatus.state + '</p>';
+              mqttHtml += '<p><strong>Connection:</strong> ' + mqttStatus.state + '</p>';
               mqttHtml += '</div>';
               mqttHtml += '</div>';
               
               if (mqttStatus.lastReconnectAttempt) {
-                mqttHtml += '<p><small><strong>Letzter Reconnect:</strong> ' + mqttStatus.lastReconnectAttempt + '</small></p>';
+                mqttHtml += '<p><small><strong>Last reconnect:</strong> ' + mqttStatus.lastReconnectAttempt + '</small></p>';
               }
               
               document.getElementById('mqttStatusContent').innerHTML = mqttHtml;
             } else {
-              document.getElementById('mqttStatusContent').innerHTML = '<p class="red-text">MQTT-Daten nicht verfügbar</p>';
+              document.getElementById('mqttStatusContent').innerHTML = '<p class="red-text">MQTT data unavailable</p>';
             }
             
             // Crash Logs anzeigen
@@ -1996,7 +1996,7 @@ void handleRoot() {
               
               crashLogsContainer.innerHTML = crashHtml;
             } else {
-              crashLogsContainer.innerHTML = '<p class="green-text">Keine Crash Logs gefunden - System läuft stabil!</p>';
+              crashLogsContainer.innerHTML = '<p class="green-text">No crash logs found.</p>';
             }
           }).catch(err => {
             console.error('Error fetching hardware info:', err);
@@ -2013,22 +2013,22 @@ void handleRoot() {
         
         // System Reboot Funktion
         function rebootSystem() {
-          if (confirm('ESP32 wirklich neustarten?\\n\\nDas System wird für ca. 10 Sekunden nicht erreichbar sein.')) {
+          if (confirm('Restart the ESP32?\\n\\nThe system will be unavailable for approximately 10 seconds.')) {
             fetch('/api/reboot', { method: 'POST' })
               .then(response => {
                 if (response.ok) {
-                  alert('Neustart eingeleitet. Das System startet neu...');
+                  alert('Restart initiated. The system is restarting...');
                   // Try to reload page after 2 seconds
                   setTimeout(() => {
                     window.location.reload();
                   }, 12000); // 12 Sekunden warten
                 } else {
-                  alert('Fehler beim Neustart-Befehl');
+                  alert('Restart command failed');
                 }
               })
               .catch(err => {
                 console.error('Reboot error:', err);
-                alert('Neustart eingeleitet (Verbindung verloren - normal)');
+                alert('Restart initiated (connection loss is expected)');
                 setTimeout(() => {
                   window.location.reload();
                 }, 12000);
@@ -2037,21 +2037,21 @@ void handleRoot() {
         }
         
         function clearCrashLogs() {
-          if (confirm('Alle Crash Logs wirklich löschen?\\n\\nDiese Aktion kann nicht rückgängig gemacht werden.')) {
+          if (confirm('Clear all crash logs?\\n\\nThis action cannot be undone.')) {
             fetch('/api/clearcrashlogs', { method: 'POST' })
               .then(response => {
                 if (response.ok) {
-                  M.toast({html: 'Crash Logs erfolgreich gelöscht!', classes: 'green'});
+                  M.toast({html: 'Crash logs cleared.', classes: 'green'});
                   // Crash Logs Container aktualisieren
                   const crashLogsContainer = document.getElementById('crashLogsContainer');
-                  crashLogsContainer.innerHTML = '<p class="grey-text">Keine Crash Logs vorhanden</p>';
+                  crashLogsContainer.innerHTML = '<p class="grey-text">No crash logs found</p>';
                 } else {
-                  M.toast({html: 'Fehler beim Löschen der Crash Logs', classes: 'red'});
+                  M.toast({html: 'Failed to clear crash logs', classes: 'red'});
                 }
               })
               .catch(err => {
                 console.error('Clear crash logs error:', err);
-                M.toast({html: 'Fehler beim Löschen der Crash Logs', classes: 'red'});
+                M.toast({html: 'Failed to clear crash logs', classes: 'red'});
               });
           }
         }
@@ -2061,7 +2061,7 @@ void handleRoot() {
           updateHardwareInfo();
         };
         
-        // Display-Helligkeit Live-Vorschau (Dropdown)
+        // Display brightness Live-Vorschau (Dropdown)
         function setupBrightnessDropdown() {
           const dropdown = document.getElementById('displaybrightness');
           
@@ -2078,15 +2078,15 @@ void handleRoot() {
               .then(response => response.json())
               .then(data => {
                 if(data.status === 'success') {
-                  M.toast({html: 'Helligkeit geändert: ' + brightness + '/255', classes: 'green'});
+                  M.toast({html: 'Brightness changed: ' + brightness + '/255', classes: 'green'});
                 } else {
                   console.error('Brightness update failed:', data.message);
-                  M.toast({html: 'Fehler beim Ändern der Helligkeit', classes: 'red'});
+                  M.toast({html: 'Failed to change brightness', classes: 'red'});
                 }
               })
               .catch(error => {
                 console.error('Brightness API error:', error);
-                M.toast({html: 'Verbindungsfehler', classes: 'red'});
+                M.toast({html: 'Connection error', classes: 'red'});
               });
             });
           }
@@ -2102,7 +2102,7 @@ void handleRoot() {
             form.onsubmit = function(e){
               var instance = M.Modal.getInstance(document.getElementById('restartModal'));
               instance.open();
-              document.getElementById('restartMsg').innerHTML = "<p>Bitte warten...</p>";
+              document.getElementById('restartMsg').innerHTML = "<p>Please wait...</p>";
               document.getElementById('spinner').style.display = "";
               setTimeout(function(){
                 var start = Date.now();
@@ -2117,7 +2117,7 @@ void handleRoot() {
                       else {
                         document.getElementById('spinner').style.display = "none";
                         document.getElementById('restartMsg').innerHTML =
-                          "<div class='errormsg'>Fehler: Client hat sich nicht mehr gemeldet oder eine neue IP Adresse bekommen.<br>Bitte aktualisieren.</div>";
+                          "<div class='errormsg'>Error: client did not return or received a new IP address.<br>Please refresh.</div>";
                       }
                     });
                 }
@@ -2140,12 +2140,12 @@ void handleRoot() {
           var formData = $(this).serialize();
           
           $.post('/save', formData, function(data) {
-            M.toast({html: 'Konfiguration gespeichert! ESP32 startet neu...', classes: 'green'});
+            M.toast({html: 'Configuration saved. ESP32 is restarting...', classes: 'green'});
             setTimeout(function() {
               window.location.reload();
             }, 3000);
           }).fail(function() {
-            M.toast({html: 'Fehler beim Speichern!', classes: 'red'});
+            M.toast({html: 'Failed to save!', classes: 'red'});
           });
         });
       });
@@ -2168,7 +2168,7 @@ void handleSave() {
   if (server.hasArg("displaytype")) displayType = server.arg("displaytype").toInt();
   if (server.hasArg("cpufreq")) cpuFrequency = server.arg("cpufreq").toInt();
   
-  // MQTT Konfiguration
+  // MQTT Configuration
   if (server.hasArg("mqttbroker")) strncpy(mqttBroker, server.arg("mqttbroker").c_str(), 63);
   if (server.hasArg("mqttport")) mqttPort = server.arg("mqttport").toInt();
   if (server.hasArg("mqttuser")) strncpy(mqttUsername, server.arg("mqttuser").c_str(), 15);
@@ -2178,53 +2178,53 @@ void handleSave() {
     int brightness = server.arg("displaybrightness").toInt();
     if(brightness >= 0 && brightness <= 255) {
       displayBrightness = brightness;
-      appendMonitor("Display-Helligkeit gespeichert: " + String(brightness), "INFO");
+      appendMonitor("Display brightness saved: " + String(brightness), "INFO");
     }
   }
   if (server.hasArg("cbchannel")) {
     uint8_t newChannel = server.arg("cbchannel").toInt();
     if(newChannel >= 1 && newChannel <= 40) {
       cbChannel = newChannel;
-      appendMonitor("CB-Kanal geändert auf " + String(cbChannel), "INFO");
+      appendMonitor("CB channel changed to " + String(cbChannel), "INFO");
     }
   }
   if (server.hasArg("packetaudio")) {
     packetAudioEnabled = (server.arg("packetaudio").toInt() == 1);
-    appendMonitor("Packet Audio " + String(packetAudioEnabled ? "aktiviert" : "deaktiviert"), "INFO");
+    appendMonitor("Packet Audio " + String(packetAudioEnabled ? "enabled" : "disabled"), "INFO");
   }
   if (server.hasArg("audiovolume")) {
     uint8_t newVolume = server.arg("audiovolume").toInt();
     if(newVolume >= 0 && newVolume <= 100) {
       audioVolume = newVolume;
-      appendMonitor("Audio-Lautstärke gesetzt auf " + String(audioVolume) + "%", "INFO");
+      appendMonitor("Audio volume set to " + String(audioVolume) + "%", "INFO");
     }
   }
   if (server.hasArg("txdelay")) {
     uint16_t newTxDelay = server.arg("txdelay").toInt();
     if(newTxDelay >= 50 && newTxDelay <= 2000) {
       txDelay = newTxDelay;
-      appendMonitor("TX Delay gesetzt auf " + String(txDelay) + "ms", "INFO");
+      appendMonitor("TX Delay set to " + String(txDelay) + "ms", "INFO");
     }
   }
   if (server.hasArg("freqmark")) {
     uint16_t newFreqMark = server.arg("freqmark").toInt();
     if(newFreqMark >= 300 && newFreqMark <= 5000) {
       afskFreqMark = newFreqMark;
-      appendMonitor("AFSK Mark-Frequenz gesetzt auf " + String(afskFreqMark) + "Hz", "INFO");
+      appendMonitor("AFSK mark frequency set to " + String(afskFreqMark) + "Hz", "INFO");
     }
   }
   if (server.hasArg("freqspace")) {
     uint16_t newFreqSpace = server.arg("freqspace").toInt();
     if(newFreqSpace >= 300 && newFreqSpace <= 5000) {
       afskFreqSpace = newFreqSpace;
-      appendMonitor("AFSK Space-Frequenz gesetzt auf " + String(afskFreqSpace) + "Hz", "INFO");
+      appendMonitor("AFSK space frequency set to " + String(afskFreqSpace) + "Hz", "INFO");
     }
   }
   if (server.hasArg("hardwaregain")) {
     uint8_t newHardwareGain = server.arg("hardwaregain").toInt();
     if(newHardwareGain >= 0 && newHardwareGain <= 3) {
       setHardwareGain(newHardwareGain);
-      appendMonitor("Hardware-Verstärkung geändert", "INFO");
+      appendMonitor("Hardware gain changed", "INFO");
     }
   }
   
@@ -2238,7 +2238,7 @@ void handleSave() {
   wifiSsid[63]=0; wifiPass[63]=0; serverUrl[63]=0; callsign[31]=0; otaRepoUrl[127]=0;
   mqttBroker[63]=0; mqttUsername[15]=0; mqttPassword[31]=0; mqttSharedSecret[31]=0;
   saveConfig();
-  appendMonitor("Konfiguration gespeichert. Neustart folgt.", "INFO");
+  appendMonitor("Configuration saved. Restarting.", "INFO");
   server.sendHeader("Location", "/", true);
   server.send(302, "text/plain", "");
   delay(500);
@@ -2275,7 +2275,7 @@ void handleMonitorClear() {
   monitorBuf = "";
   rs232HexBuf = "";
   rs232AscBuf = "";
-  appendMonitor("Monitor gelöscht", "INFO");
+  appendMonitor("Monitor cleared", "INFO");
   server.send(200, "text/plain", "OK");
 }
 
@@ -2761,7 +2761,7 @@ void checkWiFiConnection() {
     
     // WiFi restart only on repeated problems
     if (wifiReconnectAttempts > 5) {
-      appendMonitor("WiFi-Reset nach mehreren Fehlversuchen...", "WARNING");
+      appendMonitor("Resetting WiFi after multiple failed attempts...", "WARNING");
       WiFi.disconnect(true);
       delay(500);
       WiFi.mode(WIFI_STA);
@@ -2795,7 +2795,7 @@ void checkWiFiConnection() {
     // WiFi ist verbunden - prüfe Signalqualität
     int rssi = WiFi.RSSI();
     if (rssi < -85) {
-      appendMonitor("Schwaches WiFi-Signal (" + String(rssi) + " dBm). Überwache Verbindung...", "WARNING");
+      appendMonitor("Weak WiFi signal (" + String(rssi) + " dBm). Monitoring connection...", "WARNING");
     }
     
     // Reset reconnect counter on stable connection
@@ -2807,7 +2807,7 @@ void checkWiFiConnection() {
 
 // WiFi connection function (optimized for speed)
 bool tryConnectWiFi() {
-  appendMonitor("WLAN connection being established...", "INFO");
+  appendMonitor("Establishing WiFi connection...", "INFO");
   
   // WiFi-Modus konfigurieren
   WiFi.mode(WIFI_STA);
@@ -2826,15 +2826,15 @@ bool tryConnectWiFi() {
     delay(250);
     attempts++;
     if(attempts % 4 == 0) {  // Status update every second
-      Serial.println("WiFi Verbindung... (" + String(attempts/4) + "s)");
+      Serial.println("WiFi connecting... (" + String(attempts/4) + "s)");
     }
   }
   
   bool connected = (WiFi.status() == WL_CONNECTED);
   
   if (connected) {
-    Serial.println("WLAN erfolgreich verbunden mit " + String(wifiSsid));
-    Serial.println("IP-Adresse: " + WiFi.localIP().toString());
+    Serial.println("WiFi connected to " + String(wifiSsid));
+    Serial.println("IP address: " + WiFi.localIP().toString());
     Serial.println("RSSI: " + String(WiFi.RSSI()) + " dBm");
     
     // Reset-Zähler zurücksetzen
@@ -2843,7 +2843,7 @@ bool tryConnectWiFi() {
     
     return true;
   } else {
-    Serial.println("ERROR: WLAN-Verbindung fehlgeschlagen");
+    Serial.println("ERROR: WiFi connection failed");
     // Skip saveCrashLog during boot to avoid timeout
     return false;
   }
@@ -2857,7 +2857,7 @@ void startWebserver() {
   server.on("/api/hardware_info", handleHardwareInfo);
   server.on("/api/reboot", HTTP_POST, handleReboot);
   server.on("/api/clearcrashlogs", HTTP_POST, handleClearCrashLogs);
-  server.on("/api/display_brightness", HTTP_POST, handleDisplayBrightness); // Live Display-Helligkeit
+  server.on("/api/display_brightness", HTTP_POST, handleDisplayBrightness); // Live Display brightness
   // Manual OTA update removed - only boot update available
   server.begin();
 }
@@ -2868,14 +2868,14 @@ void startConfigPortal() {
   WiFi.softAPConfig(apip, apip, IPAddress(255,255,255,0));
   apActive = true;
   startWebserver();
-  appendMonitor("AccessPoint gestartet für Konfiguration", "INFO");
+  appendMonitor("Configuration access point started", "INFO");
   while (WiFi.status() != WL_CONNECTED) {
     server.handleClient();
     blinkLED();
     delay(1);
   }
   WiFi.softAPdisconnect(true);
-  appendMonitor("Konfigurationsmodus verlassen, Hotspot deaktiviert", "INFO");
+  appendMonitor("Configuration mode exited, hotspot disabled", "INFO");
   apActive = false;
 }
 
@@ -2888,7 +2888,7 @@ void checkForUpdates() {
   String urlVersion = String(otaRepoUrl) + "/version.txt";
   String urlFirmware = String(otaRepoUrl) + "/udm-prig-client.ino.bin";
 
-  appendMonitor("OTA: Prüfe auf neue Firmware unter " + urlVersion, "INFO");
+  appendMonitor("OTA: Checking for firmware at " + urlVersion, "INFO");
   HTTPClient http;
   configureHTTPClient(http, urlVersion);
   int httpCode = http.GET();
@@ -2897,13 +2897,13 @@ void checkForUpdates() {
     remoteVersion.trim();
     appendMonitor("OTA: Server Version: " + remoteVersion + ", lokal: " + String(localVersion), "DEBUG");
     if(remoteVersion != String(localVersion)) {
-      appendMonitor("OTA: Neue Version gefunden (" + remoteVersion + "), Update wird geladen!", "INFO");
+      appendMonitor("OTA: New version found (" + remoteVersion + "), downloading update.", "INFO");
       
       // Disable watchdog during firmware update to prevent timeout
       esp_task_wdt_deinit();
-      appendMonitor("OTA: Watchdog deaktiviert für Firmware-Update", "INFO");
+      appendMonitor("OTA: Watchdog disabled for firmware update", "INFO");
       
-      showOTAUpdateScreen("Bitte NICHT abstecken", 0.0);
+      showOTAUpdateScreen("DO NOT disconnect", 0.0);
 
       http.end();
       configureHTTPClient(http, urlFirmware);
@@ -2926,40 +2926,40 @@ void checkForUpdates() {
                 totalRead += read;
                 float progress = float(totalRead) / float(contentLength);
                 if(millis() - lastDisplay > 100) {
-                  showOTAUpdateScreen("Bitte NICHT abstecken", progress);
+                  showOTAUpdateScreen("DO NOT disconnect", progress);
                   lastDisplay = millis();
                 }
               }
               yield();
             }
             if(Update.end(true)) {
-              showOTAUpdateScreen("Update abgeschlossen!", 1.0);
-              appendMonitor("OTA-Update erfolgreich! Neustart...", "INFO");
+              showOTAUpdateScreen("Update complete!", 1.0);
+              appendMonitor("OTA update successful. Restarting...", "INFO");
               // Speichere neue Version im EEPROM
               strncpy(localVersion, remoteVersion.c_str(), 15);
               localVersion[15] = 0;
               saveConfig();
-              appendMonitor("Neue Version gespeichert: " + String(localVersion), "INFO");
+              appendMonitor("New version saved: " + String(localVersion), "INFO");
               delay(2000);
               ESP.restart();
             } else {
-              showOTAUpdateScreen("Fehler beim Update!", 0.0);
-              appendMonitor(String("OTA fehlgeschlagen: ") + Update.getError(), "ERROR");
+              showOTAUpdateScreen("Update failed!", 0.0);
+              appendMonitor(String("OTA failed: ") + Update.getError(), "ERROR");
               delay(4000);
             }
           } else {
-            showOTAUpdateScreen("Update Init Fehler!", 0.0);
-            appendMonitor("OTA konnte nicht gestartet werden!", "ERROR");
+            showOTAUpdateScreen("Update init error!", 0.0);
+            appendMonitor("Could not start OTA update!", "ERROR");
             delay(4000);
           }
         } else {
           showOTAUpdateScreen("Leere Firmware!", 0.0);
-          appendMonitor("OTA: Leere Firmwaredatei.", "ERROR");
+          appendMonitor("OTA: Empty firmware file.", "ERROR");
           delay(4000);
         }
       } else {
-        showOTAUpdateScreen("Download Fehler!", 0.0);
-        appendMonitor("OTA: Fehler beim Firmware-Download: " + String(resp), "ERROR");
+        showOTAUpdateScreen("Download error!", 0.0);
+        appendMonitor("OTA: Firmware download failed: " + String(resp), "ERROR");
         delay(4000);
       }
       http.end();
@@ -2968,7 +2968,7 @@ void checkForUpdates() {
       appendMonitor("OTA: Firmware aktuell.", "INFO");
     }
   } else {
-    appendMonitor("OTA: Fehler beim Versions-Check: " + String(httpCode), "WARNING");
+    appendMonitor("OTA: Version check failed: " + String(httpCode), "WARNING");
   }
   http.end();
 }
@@ -3059,7 +3059,7 @@ void setup() {
     EEPROM.write(CPU_FREQUENCY_OFFSET, 2);
     EEPROM.commit();
     
-    Serial.println("CPU-Frequenz auf 80 MHz korrigiert. Neustart...");
+    Serial.println("CPU frequency corrected to 80 MHz. Restarting...");
     delay(2000);
     ESP.restart();
   }
@@ -3085,7 +3085,7 @@ void setup() {
   Serial.println("Full config load took: " + String(millis() - fullConfigStart) + "ms");
   bootPrint("Config loaded");
   
-  // CPU-Frequenz basierend auf Konfiguration setzen
+  // CPU frequency basierend auf Configuration setzen
   unsigned long cpuFreqStart = millis();
   bootPrint("Setting CPU Freq...");
   setCpuFrequency();
@@ -3114,51 +3114,51 @@ void setup() {
   bootPrint("Init RS232 Serial...");
   if (baudrate == 0) {
     baudrate = 2400;
-    appendMonitor("Baudrate war 0! Auf 2400 gesetzt.", "WARNING");
+    appendMonitor("Baud rate was 0; set to 2400.", "WARNING");
   }
   RS232.begin(baudrate, SERIAL_8N1, 16, 17);
-  appendMonitor("RS232 initialisiert mit Baudrate " + String(baudrate), "INFO");
+  appendMonitor("RS232 initialized at baud rate " + String(baudrate), "INFO");
   bootPrint("RS232 " + String(baudrate) + " OK");
 
-  bootPrint("Verbinde WLAN ...");
+  bootPrint("Connecting WiFi...");
   unsigned long wifiStart = millis();
   bool wifiOk = tryConnectWiFi();
   Serial.println("WiFi connect took: " + String(millis() - wifiStart) + "ms");
   if (!wifiOk) {
-    bootPrint("WLAN fehlgeschlagen!");
-    appendMonitor("Starte Konfigurationsportal...", "WARNING");
-    bootPrint("Starte Config-Portal!");
+    bootPrint("WiFi failed!");
+    appendMonitor("Starting configuration portal...", "WARNING");
+    bootPrint("Starting config portal!");
     startConfigPortal();
   }
 
-  bootPrint("Starte Webserver ...");
+  bootPrint("Starting web server...");
   startWebserver();
   bootPrint("Webserver online");
 
   if (serverUrl[0] == 0) {
-    appendMonitor("Keine Server-URL konfiguriert! Starte Konfigurationsportal...", "WARNING");
-    bootPrint("Keine Server-URL! Portal!");
+    appendMonitor("No server URL configured. Starting configuration portal...", "WARNING");
+    bootPrint("No server URL! Portal!");
     if (!apActive) startConfigPortal();
   }
 
   bootPrint("Init NTP Server...");
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  appendMonitor("NTP initialisiert (at.pool.ntp.org, Europe/Vienna)", "INFO");
+  appendMonitor("NTP initialized (at.pool.ntp.org, Europe/Vienna)", "INFO");
   bootPrint("NTP Server OK");
 
   bootPrint("Init mDNS...");
   if (!MDNS.begin("udmprig-client")) {
-    appendMonitor("mDNS konnte nicht gestartet werden", "ERROR");
-    bootPrint("mDNS ... FEHLER");
+    appendMonitor("Could not start mDNS", "ERROR");
+    bootPrint("mDNS ... ERROR");
   } else {
-    appendMonitor("mDNS gestartet als udmprig-client.local", "INFO");
+    appendMonitor("mDNS started as udmprig-client.local", "INFO");
     bootPrint("mDNS OK");
   }
   // Move OTA check to background - don't block boot
-  appendMonitor("Firmware Update-Check wird im Hintergrund ausgeführt", "INFO");
-  bootPrint("OTA Check gestartet");
+  appendMonitor("Firmware update check running in background", "INFO");
+  bootPrint("OTA check started");
   
-  appendMonitor("Setup abgeschlossen - Client startet normal", "INFO");
+  appendMonitor("Setup complete - starting client", "INFO");
   
   // **STABILE VERSION: Hardware Watchdog aktivieren (ESP32 5.x kompatibel)**
   bootPrint("Init Watchdog...");
@@ -3174,18 +3174,18 @@ void setup() {
   if (result == ESP_OK) {
     result = esp_task_wdt_add(NULL);
     if (result == ESP_OK) {
-      appendMonitor("Hardware Watchdog aktiviert (30s timeout)", "INFO");
+      appendMonitor("Hardware watchdog enabled (30s timeout)", "INFO");
       lastWatchdogReset = millis();
       bootPrint("Watchdog 30s OK");
     } else {
-      appendMonitor("Watchdog Task-Add fehlgeschlagen, Code: " + String(result), "WARNING");
+      appendMonitor("Watchdog task registration failed, code: " + String(result), "WARNING");
       saveCrashLog("Watchdog task add failed: " + String(result));
-      bootPrint("Watchdog FEHLER");
+      bootPrint("Watchdog ERROR");
     }
   } else {
-    appendMonitor("Watchdog Init fehlgeschlagen, Code: " + String(result) + " - System läuft ohne Watchdog", "WARNING");
+    appendMonitor("Watchdog initialization failed, code: " + String(result) + " - system running without watchdog", "WARNING");
     saveCrashLog("Watchdog init failed: " + String(result));
-    bootPrint("Watchdog FEHLER");
+    bootPrint("Watchdog ERROR");
   }
   
   // MQTT setup (always enabled in this version)
@@ -3197,7 +3197,7 @@ void setup() {
     bootPrint("MQTT enabled");
   } else {
     appendMonitor("MQTT broker not configured - please set in web interface", "WARNING");
-    bootPrint("MQTT nicht konfiguriert");
+    bootPrint("MQTT not configured");
   }
   
   delay(1000); // Brief wait after watchdog activation
@@ -3325,7 +3325,7 @@ void loop() {
     }
     
     if (freeHeap < 10000) { // Unter 10KB freier Speicher
-      appendMonitor("KRITISCH: Wenig freier Speicher! Neustart wird eingeleitet.", "ERROR");
+      appendMonitor("CRITICAL: Low free memory. Restarting.", "ERROR");
       saveCrashLog("Critical memory shortage - Emergency restart (Heap: " + String(freeHeap) + "B)");
       delay(1000);
       ESP.restart();
@@ -3339,7 +3339,7 @@ void loop() {
   if (millis() - lastWiFiCheck > 5000) {
     wl_status_t currentStatus = WiFi.status();
     
-    // Wenn sich der WiFi-Status geändert hat
+    // Wenn sich der WiFi-Status changed hat
     if (currentStatus != lastWiFiStatus) {
       String statusMsg = "WiFi status changed: " + getWiFiStatusText(lastWiFiStatus) + 
                         " -> " + getWiFiStatusText(currentStatus);
@@ -3348,13 +3348,13 @@ void loop() {
       
       // Bei Verbindungsverlust zusätzliche Diagnose
       if (lastWiFiStatus == WL_CONNECTED && currentStatus != WL_CONNECTED) {
-        appendMonitor("WiFi-Verbindung verloren: " + getWiFiStatusText(currentStatus), "WARNING");
+        appendMonitor("WiFi connection lost: " + getWiFiStatusText(currentStatus), "WARNING");
         saveCrashLog("WiFi connection lost: " + statusMsg + " RSSI: " + String(WiFi.RSSI()));
       }
       
       // Bei erfolgreicher Wiederverbindung
       if (lastWiFiStatus != WL_CONNECTED && currentStatus == WL_CONNECTED) {
-        appendMonitor("WiFi-Verbindung wiederhergestellt. IP: " + WiFi.localIP().toString(), "INFO");
+        appendMonitor("WiFi connection restored. IP: " + WiFi.localIP().toString(), "INFO");
       }
       
       lastWiFiStatus = currentStatus;
@@ -3374,7 +3374,7 @@ void loop() {
     // WiFi-Status nach WebServer-Verarbeitung prüfen (ohne Serial-Debug)
     wl_status_t postServerStatus = WiFi.status();
     if(preServerStatus != postServerStatus) {
-      // WiFi-Status hat sich geändert, aber keine Serial-Ausgabe mehr
+      // WiFi-Status hat sich changed, aber keine Serial-Ausgabe mehr
       logWiFiDiagnostics();
     }
     
@@ -3386,7 +3386,7 @@ void loop() {
   static unsigned long lastMqttStatus = 0;
   if (mqttEnabled && millis() - lastMqttStatus > 60000) {
     if(isMqttConnected()) {
-      // Status-Nachricht als JSON in Broadcast-Kanal
+      // Status-Message als JSON in Broadcast-Kanal
       char statusBuffer[128];
       snprintf(statusBuffer, sizeof(statusBuffer), 
                "{\"timestamp\":%lu,\"callsign\":\"%s\",\"type\":\"status\",\"rssi\":%d,\"heap\":%u,\"uptime\":%lu}", 
@@ -3404,12 +3404,12 @@ void loop() {
     lastOled = millis();
   }
 
-  // **MQTT Loop für Empfang (KRITISCH für MQTT-Nachrichten!)**
+  // **MQTT Loop für Empfang (KRITISCH für MQTT-Messageen!)**
   if (mqttEnabled) {
     handleMqttLoop();
   }
 
-  // RS232 KISS-Protokoll Verarbeitung (saubere Nachrichtentrennung)
+  // RS232 KISS-Protokoll Verarbeitung (saubere Messageentrennung)
   if (RS232.available()) {
     static unsigned long lastRs232Activity = 0;
     if (millis() - lastRs232Activity > 5000) { // Debug only every 5 seconds
@@ -3435,7 +3435,7 @@ void loop() {
         inKissFrame = false;
         kissBuffer += c; // FEND End-Byte mit einschließen!
         
-        // Vollständige KISS-Nachricht mit FEND-Bytes verarbeiten
+        // Vollständige KISS-Message mit FEND-Bytes verarbeiten
         if(kissBuffer.length() > 2) { // Mindestens C0 XX C0
           processCompleteKissMessage(kissBuffer);
         }
@@ -3445,7 +3445,7 @@ void loop() {
         continue;
       }
       
-      // Zeichen zum KISS-Buffer hinzufügen (wenn in Frame)
+      // characters zum KISS-Buffer hinzufügen (wenn in Frame)
       if (inKissFrame) {
         kissBuffer += c;
         currentKissLength++;
@@ -3467,7 +3467,7 @@ void processCompleteKissMessage(const String& kissData) {
   appendMonitor("KISS Message empfangen: " + String(kissData.length()) + " bytes", "DEBUG");
   
   if(!isMqttConnected()) {
-    appendMonitor("MQTT nicht verbunden - KISS Message verworfen!", "WARNING");
+    appendMonitor("MQTT disconnected - KISS message discarded!", "WARNING");
     return;
   }
   
@@ -3526,9 +3526,9 @@ String hexToBytes(const String& hexString) {
 void processMqttMessage(const String& message) {
   // KRITISCHE DEBUG-AUSGABE
   appendMonitor(">>> processMqttMessage() aufgerufen <<<", "DEBUG");
-  appendMonitor("MQTT Message Länge: " + String(message.length()), "DEBUG");
+  appendMonitor("MQTT message length: " + String(message.length()), "DEBUG");
   
-  // Eigene Nachrichten filtern (Echo-Schutz)
+  // Eigene Messageen filtern (Echo-Schutz)
   int callsignStart = message.indexOf("\"callsign\":\"");
   if(callsignStart != -1) {
     callsignStart += 12; // Length of "callsign":""
@@ -3536,9 +3536,9 @@ void processMqttMessage(const String& message) {
     if(callsignEnd != -1) {
       String senderCallsign = message.substring(callsignStart, callsignEnd);
       
-      // Wenn es unsere eigene Nachricht ist, ignorieren
+      // Wenn es unsere eigene Message ist, ignorieren
       if(senderCallsign == String(callsign)) {
-        appendMonitor("MQTT Echo ignoriert (eigene Nachricht)", "DEBUG");
+        appendMonitor("MQTT echo ignored (own message)", "DEBUG");
         return;
       }
     }
@@ -3557,12 +3557,12 @@ void processMqttMessage(const String& message) {
       // Decrypt payload if shared secret is configured
       if (strlen(mqttSharedSecret) > 0) {
         hexPayload = decryptPayload(hexPayload);
-        appendMonitor("MQTT RX Payload entschlüsselt: " + String(hexPayload.length()) + " Zeichen", "DEBUG");
+        appendMonitor("MQTT RX payload decrypted: " + String(hexPayload.length()) + " characters", "DEBUG");
       }
       
-      // Validierung: Hex-String muss gerade Anzahl Zeichen haben
+      // Validierung: Hex-String muss gerade Anzahl characters haben
       if(hexPayload.length() % 2 != 0) {
-        appendMonitor("MQTT RX Error: Ungültiger Hex-String (ungerade Länge)", "ERROR");
+        appendMonitor("MQTT RX error: invalid hex string (odd length)", "ERROR");
         return;
       }
       
@@ -3582,8 +3582,8 @@ void processMqttMessage(const String& message) {
       
       // KRITISCHE DEBUG-AUSGABEN - IMMER ANZEIGEN
       appendMonitor("=== MQTT->RS232 START ===", "DEBUG");
-      appendMonitor("HexPayload Länge: " + String(hexPayload.length()), "DEBUG");
-      appendMonitor("BinaryData Länge: " + String(binaryData.length()), "DEBUG");
+      appendMonitor("Hex payload length: " + String(hexPayload.length()), "DEBUG");
+      appendMonitor("Binary data length: " + String(binaryData.length()), "DEBUG");
       appendMonitor("DEBUG: Sende 1:1 an RS232: " + debugHex, "DEBUG");
       
       // Hex-Daten 1:1 an RS232 senden (bereits vollständige KISS-Frames)
@@ -3595,7 +3595,7 @@ void processMqttMessage(const String& message) {
       // TX-Indikator für Display setzen (wenn Daten erfolgreich gesendet)
       if(bytesWritten > 0) {
         lastTX = millis();
-        appendMonitor("TX-Indikator gesetzt (lastTX)", "DEBUG");
+        appendMonitor("TX indicator set (lastTX)", "DEBUG");
       }
       
       appendMonitor("=== MQTT->RS232 END ===", "DEBUG");
@@ -3620,7 +3620,7 @@ void processMqttMessage(const String& message) {
       lastRX = millis();
     }
   } else {
-    appendMonitor("MQTT RX: Keine payload_hex gefunden", "WARNING");
+    appendMonitor("MQTT RX: payload_hex not found", "WARNING");
   }
 }
 
@@ -3738,7 +3738,7 @@ void setupI2SAudio() {
     .fixed_mclk = 0
   };
 
-  // I2S Pin-Konfiguration
+  // I2S Pin-Configuration
   i2s_pin_config_t pin_config = {
     .bck_io_num = I2S_BCLK_PIN,
     .ws_io_num = I2S_LRC_PIN,
@@ -3767,7 +3767,7 @@ void setupI2SAudio() {
     return;
   }
   
-  appendMonitor("I2S Audio für MAX98357A initialisiert", "INFO");
+  appendMonitor("I2S audio initialized for MAX98357A", "INFO");
   
   // Initialize hardware gain pin (this has delays!)
   unsigned long gainStart = millis();
@@ -3791,7 +3791,7 @@ void setupHardwareGain() {
   
   unsigned long monitorStart = millis();
   // Temporarily disable appendMonitor during boot to avoid timeout
-  Serial.println("Hardware-Gain Pin (GPIO" + String(I2S_GAIN_PIN) + ") konfiguriert");
+  Serial.println("Hardware-Gain Pin (GPIO" + String(I2S_GAIN_PIN) + ") configured");
   Serial.println("appendMonitor() took: " + String(millis() - monitorStart) + "ms");
 }
 
@@ -3814,13 +3814,13 @@ void setHardwareGain(uint8_t gainLevel) {
     case 1: // 6dB - HIGH (connect to Vin)
       pinMode(I2S_GAIN_PIN, OUTPUT);
       digitalWrite(I2S_GAIN_PIN, HIGH);
-      gainDesc = "6dB (Niedrig)";
+      gainDesc = "6dB (Low)";
       break;
       
     case 2: // 12dB - LOW (connect to GND)
       pinMode(I2S_GAIN_PIN, OUTPUT);
       digitalWrite(I2S_GAIN_PIN, LOW);
-      gainDesc = "12dB (Hoch)";
+      gainDesc = "12dB (High)";
       break;
       
     default:
@@ -3836,7 +3836,7 @@ void setHardwareGain(uint8_t gainLevel) {
   delay(1);
   
   // Temporarily use Serial instead of appendMonitor during boot to avoid timeout
-  Serial.println("Hardware-Verstärkung: " + gainDesc + " (GPIO" + String(I2S_GAIN_PIN) + ")");
+  Serial.println("Hardware gain: " + gainDesc + " (GPIO" + String(I2S_GAIN_PIN) + ")");
   
   // Debug output only in debug mode to save time
   if (logLevel >= 3) {

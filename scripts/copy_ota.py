@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Einfaches OTA Copy-Script für UDM-PRIG
-======================================
+OTA copy script for UDM-PRIG
+===========================
 
-Kopiert die kompilierte firmware.bin automatisch nach ota/udm-prig-client.ino.bin
-Überschreibt die Datei jedes Mal - Version wird separat verwaltet.
+Copies the compiled firmware.bin to ota/udm-prig-client.ino.bin.
+The file is overwritten each time; the version is managed separately.
 """
 
 import os
@@ -14,42 +14,42 @@ Import("env")
 
 def copy_firmware_to_ota(source, target, env):
     """
-    Post-build hook - kopiert firmware.bin ins OTA-Verzeichnis
+    Post-build hook: copy firmware.bin to the OTA directory.
     """
-    # Pfade ermitteln - source[0] sollte firmware.bin sein, aber wir müssen sicherstellen dass es .bin ist
+    # Resolve the firmware binary path.
     source_path = str(source[0])
     project_dir = env.get("PROJECT_DIR")
     
-    # Stelle sicher, dass wir die .bin Datei und nicht die .elf haben
+    # Use the .bin file rather than the .elf file.
     if source_path.endswith('.elf'):
         firmware_path = source_path.replace('.elf', '.bin')
     else:
         firmware_path = source_path
     
-    # OTA-Ziel
+    # OTA destination
     ota_dir = os.path.join(project_dir, "ota")
     ota_firmware = os.path.join(ota_dir, "udm-prig-client.ino.bin")
     
-    # Debug-Ausgabe
-    print(f"🔍 Firmware gefunden: {firmware_path}")
+    # Debug output
+    print(f"🔍 Firmware found: {firmware_path}")
     
-    # Prüfen ob firmware.bin existiert
+    # Check that firmware.bin exists.
     if os.path.exists(firmware_path):
-        # OTA-Verzeichnis erstellen falls nötig
+        # Create the OTA directory if necessary.
         if not os.path.exists(ota_dir):
             os.makedirs(ota_dir)
             
-        # Firmware kopieren (überschreibt automatisch)
+        # Copy firmware (overwrites the destination).
         shutil.copy2(firmware_path, ota_firmware)
         
-        # Dateigröße ermitteln
+        # Get the file size.
         size = os.path.getsize(ota_firmware)
         size_kb = size / 1024
         
-        print(f"✅ OTA-Firmware erstellt: {ota_firmware}")
-        print(f"📦 Größe: {size:,} bytes ({size_kb:.1f} KB)")
+        print(f"✅ OTA firmware created: {ota_firmware}")
+        print(f"📦 Size: {size:,} bytes ({size_kb:.1f} KB)")
     else:
-        print(f"❌ Firmware nicht gefunden: {firmware_path}")
+        print(f"❌ Firmware not found: {firmware_path}")
 
-# Hook registrieren - wird nach der Erstellung der firmware.bin ausgeführt
+# Register the hook after firmware.bin is generated.
 env.AddPostAction("$BUILD_DIR/firmware.bin", copy_firmware_to_ota)

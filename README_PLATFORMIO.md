@@ -1,51 +1,51 @@
 # UDM Packet Radio Internet Gateway (PRIG) - PlatformIO Project
 
-Dieses Projekt wurde von der Arduino IDE auf **PlatformIO** für das ESP32 Dev Module umstrukturiert.
+This project was migrated from the Arduino IDE to **PlatformIO** for the ESP32 Dev Module.
 
-## 📁 Projektstruktur
+## 📁 Project Structure
 
 ```
-├── platformio.ini          # PlatformIO Konfiguration
+├── platformio.ini          # PlatformIO configuration
 ├── src/
-│   └── main.cpp            # Haupt-Quellcode (ehemals .ino)
-├── include/                # Header-Dateien (falls benötigt)
-├── lib/                    # Lokale Bibliotheken
-├── data/                   # SPIFFS/LittleFS Dateien
-├── scripts/                # Build-Skripte
+│   └── main.cpp            # Main source code (formerly .ino)
+├── include/                # Header files
+├── lib/                    # Local libraries
+├── data/                   # SPIFFS/LittleFS files
+├── scripts/                # Build scripts
 │   └── version_increment.py
-├── ota/                    # OTA Update-Dateien
+├── ota/                    # OTA update files
 │   ├── README.md
 │   ├── udm-prig-client.ino.bin
 │   └── version.txt
-└── README_PLATFORMIO.md    # Diese Datei
+└── README_PLATFORMIO.md    # This file
 ```
 
-## 🚀 Erste Schritte
+## 🚀 Getting Started
 
 ### 1. PlatformIO Installation
 
 **VS Code Extension:**
-- Öffne VS Code
-- Installiere die "PlatformIO IDE" Extension
-- Lade das Projekt-Verzeichnis
+- Open VS Code
+- Install the "PlatformIO IDE" extension
+- Open the project directory
 
 **CLI Installation:**
 ```bash
 pip install platformio
 ```
 
-### 2. Projekt kompilieren
+### 2. Build the Project
 
 **VS Code:**
-- Drücke `Ctrl+Shift+P` → "PlatformIO: Build"
-- Oder klicke auf das Build-Symbol in der Statusleiste
+- Press `Ctrl+Shift+P` → "PlatformIO: Build"
+- Or click the build icon in the status bar
 
 **CLI:**
 ```bash
 pio run
 ```
 
-### 3. Auf ESP32 hochladen
+### 3. Upload to ESP32
 
 **VS Code:**
 - `Ctrl+Shift+P` → "PlatformIO: Upload"
@@ -65,11 +65,11 @@ pio run --target upload
 pio device monitor
 ```
 
-## ⚙️ Konfiguration
+## ⚙️ Configuration
 
-### Board-Einstellungen
+### Board Settings
 
-Das Projekt ist für **ESP32 Dev Module** konfiguriert:
+The project is configured for **ESP32 Dev Module**:
 
 ```ini
 [env:esp32dev]
@@ -78,18 +78,18 @@ board = esp32dev
 framework = arduino
 ```
 
-### COM-Port Konfiguration
+### COM Port Configuration
 
-Windows-Benutzer müssen möglicherweise den COM-Port anpassen:
+Windows users may need to adjust the COM port:
 
 ```ini
-monitor_port = COM3    # Passe deinen Port an
-upload_port = COM3     # Passe deinen Port an
+monitor_port = COM3    # Set your port
+upload_port = COM3     # Set your port
 ```
 
-### Build-Optionen
+### Build Options
 
-Die wichtigsten Build-Flags:
+Important build flags:
 
 ```ini
 build_flags = 
@@ -98,19 +98,19 @@ build_flags =
     -DMQTT_MAX_PACKET_SIZE=1024
 ```
 
-## 📚 Bibliotheken
+## 📚 Libraries
 
-Alle benötigten Bibliotheken werden automatisch installiert:
+Required libraries are installed automatically:
 
-- **Adafruit GFX Library** - Display-Grafiken
+- **Adafruit GFX Library** - Display graphics
 - **Adafruit SH110X** - OLED Display SH1106G
 - **Adafruit SSD1306** - OLED Display SSD1306
-- **ArduinoMqttClient** - MQTT Kommunikation
+- **ArduinoMqttClient** - MQTT communication
 - **ArduinoJson** - JSON Parsing
 
-## 🔧 Hardware-Konfiguration
+## 🔧 Hardware Configuration
 
-### Pin-Belegung
+### Pin Assignments
 
 ```cpp
 // I2S Audio (MAX98357A)
@@ -124,43 +124,42 @@ Alle benötigten Bibliotheken werden automatisch installiert:
 // GPIO17 = TX
 
 // I2C Display
-// GPIO21 = SDA (Standard)
-// GPIO22 = SCL (Standard)
+// GPIO21 = SDA (default)
+// GPIO22 = SCL (default)
 
 // Status LED
 #define LED_PIN 2
 ```
 
-### Hardware-Anforderungen
+### Hardware Requirements
 
-- **ESP32 Development Board** (WROOM-32 oder ähnlich)
-- **OLED Display 128x64** (SH1106G oder SSD1306, I2C)
-- **MAX98357A I2S Audio Amplifier** (optional, für AFSK)
-- **RS232 Interface** (MAX3232 oder ähnlich)
-- **Level Shifter** 3,3V ↔ 5V (für höhere Signalpegel)
+- **ESP32 Development Board** (WROOM-32 or similar)
+- **OLED Display 128x64** (SH1106G or SSD1306, I2C)
+- **MAX98357A I2S Audio Amplifier** (optional, for AFSK)
+- **RS232 Interface** (MAX3232 or similar)
+- **Level Shifter** 3.3V ↔ 5V (for higher signal levels)
 
-## 🌐 MQTT Konfiguration
+## 🌐 MQTT Configuration
 
-Das System arbeitet als **CB-Funk Simulation** mit MQTT:
+The system simulates **CB radio** using MQTT:
 
-- **Kanäle:** 1-40 (udmprig/rf/1 bis udmprig/rf/40)
-- **Verschlüsselung:** XOR mit shared secret
+- **Channels:** 1-40 (udmprig/rf/1 to udmprig/rf/40)
+- **Encryption:** XOR with shared secret
 - **Audio:** Bell 202 AFSK (1200/2200 Hz)
-- **Protokoll:** KISS über RS232
+- **Protocol:** KISS over RS232
 
 ## 🔄 OTA Updates
 
-**Automatisch beim Boot:**
-- Updates werden beim Start automatisch geprüft und nur installiert, wenn die
-  Release-Version numerisch neuer ist als die aktuell installierte Version.
-  Ältere Versionen lassen sich nur manuell flashen.
-- Repository: GitHub (`ota/` Verzeichnis)
+**Automatic at boot:**
+- Updates are checked at startup and installed only when the release version is
+  numerically newer than the installed version. Older versions require manual flashing.
+- Repository: GitHub (`ota/` directory)
 
-Für lokale Test-Builds kann `-DUDMPRIG_DISABLE_AUTO_OTA` zu den PlatformIO
-`build_flags` hinzugefügt werden. Dadurch wird der Teststand nicht automatisch
-durch ein Release ersetzt; reguläre Builds behalten die automatische Prüfung.
+For local test builds, add `-DUDMPRIG_DISABLE_AUTO_OTA` to the PlatformIO
+`build_flags` to prevent automatic replacement by a release. Regular builds
+retain automatic update checks.
 
-**Manuell über Web-Interface:**
+**Web interface:**
 - http://udmprig-client.local/
 - http://[ESP32-IP]/
 
@@ -168,55 +167,52 @@ durch ein Release ersetzt; reguläre Builds behalten die automatische Prüfung.
 
 ### Web-Interface
 
-Das System bietet eine vollständige Web-Konfiguration:
+The system provides a web configuration interface:
 
 - **Hardware-Info:** CPU, Memory, WiFi Status
-- **MQTT Status:** Verbindung, CB-Kanal, Verschlüsselung  
-- **Audio-Einstellungen:** Lautstärke, AFSK-Frequenzen
-- **Display-Kontrolle:** Helligkeit, Typ
-- **Serial Monitor:** Live-Debug-Ausgaben
+- **MQTT Status:** Connection, CB channel, encryption
+- **Audio Settings:** Volume, AFSK frequencies
+- **Display Control:** Brightness, type
+- **Serial Monitor:** Live debug output
 
-Beim Start versucht das Gerät die WLAN-Verbindung bis zu dreimal jeweils
-fünf Sekunden lang. Versuch und Ergebnis erscheinen auf dem OLED und im
-seriellen Monitor; nach drei Fehlschlägen startet das Konfigurationsportal.
-Der WLAN-Energiesparmodus bleibt auch nach einem WLAN-Reset deaktiviert.
+At startup the device attempts to connect to WiFi up to three times, each for
+five seconds. Attempts and results appear on the OLED and serial monitor. After
+three failures, the configuration portal starts. WiFi power saving remains
+disabled after a WiFi reset.
 
-Unter **Config → Fehlertöne** stehen vier Einstellungen zur Wahl:
-1 = Aus (Standard), 2–4 = drei unterschiedliche Klingeltöne. Die Einstellung
-wird dauerhaft gespeichert und ist auch im Konfigurationsportal verfügbar.
-Bei der Auswahl eines Klingeltons wird eine Hörprobe abgespielt, ohne die
-Einstellung bereits zu speichern.
-Fehler mit Log-Level `ERROR` werden über den MAX98357A ausgegeben; mehrere
-gleichzeitig anstehende Fehler werden zu einem Ton zusammengefasst. Der Ton
-ist unabhängig von der Paket-Audio-Simulation, verwendet aber deren Lautstärke
-und Hardware-Verstärkung. Vor erfolgreicher I2S-Initialisierung oder bei einem
-I2S-Fehler ist keine Tonausgabe möglich.
+Under **Config → Error sounds**, choose 1 = Off (default) or 2–4 for three
+different ringtones. The setting persists and is also available in the
+configuration portal. Selecting a ringtone plays a preview without saving it.
+Errors logged at `ERROR` level play through the MAX98357A; simultaneous pending
+errors are combined into one sound. Error sounds are independent of packet audio
+simulation but share its volume and hardware gain. Sound is unavailable until
+I2S has initialized successfully or if I2S fails.
 
-### Debug-Ausgaben
+### Debug Output
 
 ```ini
-monitor_speed = 2400    # Entspricht der RS232-Baudrate
+monitor_speed = 115200    # ESP32 debug serial port
 ```
 
-Log-Level über Web-Interface einstellbar:
+Log level can be set in the web interface:
 - **0:** Error only
-- **1:** Info (Standard)
+- **1:** Info (default)
 - **2:** Warning
 - **3:** Debug (verbose)
 
-## 🛠️ Entwicklung
+## 🛠️ Development
 
-### Version automatisch erhöhen
+### Increment Version
 
-Das Build-Script erhöht automatisch die Patch-Version:
+The legacy version increment script can be invoked with:
 
 ```bash
 python scripts/version_increment.py
 ```
 
-### Eigene Bibliotheken
+### Custom Libraries
 
-Lokale Libraries in `lib/` Verzeichnis:
+Local libraries in the `lib/` directory:
 
 ```
 lib/
@@ -226,42 +222,42 @@ lib/
 └── README
 ```
 
-### SPIFFS/LittleFS Dateien
+### SPIFFS/LittleFS Files
 
-Web-Assets in `data/` Verzeichnis:
+Web assets in the `data/` directory:
 
 ```bash
 pio run --target uploadfs
 ```
 
-## 🐛 Fehlerbehebung
+## 🐛 Troubleshooting
 
-### Häufige Probleme
+### Common Problems
 
-**1. COM-Port nicht gefunden:**
+**1. COM port not found:**
 ```bash
 pio device list
 ```
 
-**2. Bibliothek nicht gefunden:**
+**2. Library not found:**
 ```bash
 pio lib install
 ```
 
-**3. Board nicht erkannt:**
+**3. Board not detected:**
 ```ini
 # In platformio.ini
 upload_port = COM3
 upload_speed = 115200
 ```
 
-**4. Memory-Probleme:**
+**4. Memory problems:**
 ```ini
-# Partitions anpassen
+# Adjust partitions
 board_build.partitions = default.csv
 ```
 
-### Debug-Ausgaben aktivieren
+### Enable Debug Output
 
 ```ini
 build_flags = 
@@ -269,37 +265,37 @@ build_flags =
     -DARDUINO_USB_CDC_ON_BOOT=1
 ```
 
-## 📋 Befehle-Übersicht
+## 📋 Command Reference
 
 ```bash
-# Projekt-Informationen
+# Project information
 pio project config
 
 # Clean build
 pio run --target clean
 
-# Upload mit Monitor
+# Upload with monitor
 pio run --target upload --target monitor
 
-# Dependencies aktualisieren
+# Update dependencies
 pio lib update
 
-# Board-Informationen
+# Board information
 pio boards esp32dev
 
-# Environment-spezifische Builds
+# Environment-specific builds
 pio run -e esp32dev
 ```
 
-## 🔗 Nützliche Links
+## 🔗 Useful Links
 
 - **PlatformIO Docs:** https://docs.platformio.org/
 - **ESP32 Arduino:** https://docs.espressif.com/projects/arduino-esp32/
 - **Original Repository:** https://github.com/nad22/UDM-Packet-Radio-Internet-Gateway
 
-## 📄 Lizenz
+## 📄 License
 
-MIT License - Siehe original README.md
+MIT License - See the original README.md
 
 ---
 

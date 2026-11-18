@@ -1,34 +1,34 @@
-# PlatformIO Quick Start Guide für UDM-PRIG
+# PlatformIO Quick Start Guide for UDM-PRIG
 
-## 🚀 Schnellstart
+## 🚀 Quick Start
 
-### 1. PlatformIO installieren
+### 1. Install PlatformIO
 
 **In VS Code:**
-- Extension "PlatformIO IDE" installieren
-- VS Code neustarten
-- Das Projekt-Verzeichnis öffnen
+- Install the "PlatformIO IDE" extension
+- Restart VS Code
+- Open the project directory
 
-**Kommandozeile:**
+**Command line:**
 ```bash
 pip install platformio
 ```
 
-### 2. Projekt öffnen
+### 2. Open the Project
 
 **VS Code:**
-- File → Open Folder → Projekt-Verzeichnis auswählen
-- PlatformIO erkennt automatisch die `platformio.ini`
+- File → Open Folder → select the project directory
+- PlatformIO automatically detects `platformio.ini`
 
 **CLI:**
 ```bash
-cd /pfad/zum/projekt
+cd /path/to/project
 pio project init
 ```
 
-## ⚙️ Wichtige Befehle
+## ⚙️ Important Commands
 
-### Kompilieren
+### Build
 ```bash
 # Standard Build
 pio run
@@ -43,48 +43,48 @@ pio run -e esp32dev_release
 pio run --target clean
 ```
 
-### Upload zum ESP32
+### Upload to ESP32
 ```bash
 # Standard Upload
 pio run --target upload
 
-# Mit Serial Monitor
+# With serial monitor
 pio run --target upload --target monitor
 
-# OTA Upload (wenn konfiguriert)
+# OTA upload (if configured)
 pio run -e esp32dev_ota --target upload
 ```
 
 ### Serial Monitor
 ```bash
-# Monitor starten
+# Start monitor
 pio device monitor
 
-# Mit bestimmter Baudrate
+# With a specific baud rate
 pio device monitor --baud 115200
 
-# Verfügbare Ports anzeigen
+# List available ports
 pio device list
 ```
 
-### Bibliotheken verwalten
+### Manage Libraries
 ```bash
-# Alle installieren
+# Install all
 pio lib install
 
-# Bestimmte Bibliothek
+# Specific library
 pio lib install "Adafruit GFX Library"
 
-# Updates prüfen
+# Check for updates
 pio lib update
 
-# Bibliotheken anzeigen
+# List libraries
 pio lib list
 ```
 
-## 🛠️ Entwicklung
+## 🛠️ Development
 
-### Environment wechseln
+### Switch Environment
 ```bash
 # Debug-Modus
 pio run -e esp32dev_debug
@@ -92,129 +92,129 @@ pio run -e esp32dev_debug
 # Release-Modus
 pio run -e esp32dev_release
 
-# Standard (wie in default_envs definiert)
+# Default (as defined in default_envs)
 pio run
 ```
 
-### Abhängigkeiten aktualisieren
+### Update Dependencies
 ```bash
-# Platform aktualisieren
+# Update platform
 pio platform update espressif32
 
-# Alle Pakete aktualisieren
+# Update all packages
 pio pkg update
 ```
 
-### Code-Analyse
+### Code Analysis
 ```bash
-# Static Analysis (wenn konfiguriert)
+# Static analysis (if configured)
 pio check
 
-# Tests ausführen
+# Run tests
 pio test
 ```
 
-## 📋 Nützliche Infos
+## 📋 Useful Information
 
-### Board-Informationen
+### Board Information
 ```bash
-# ESP32 Boards anzeigen
+# List ESP32 boards
 pio boards esp32
 
-# Spezifische Board-Info
+# Specific board information
 pio boards esp32dev
 ```
 
-### Projekt-Konfiguration anzeigen
+### Show Project Configuration
 ```bash
-# Komplette Konfiguration
+# Complete configuration
 pio project config
 
-# Nur bestimmtes Environment
+# Specific environment only
 pio project config --environment esp32dev
 ```
 
 ### Firmware-Info
 ```bash
-# Build-Informationen
+# Build information
 pio run --verbose
 
-# Größen-Analyse
+# Size analysis
 pio run --target size
 ```
 
-## 🔧 COM-Port Probleme (Windows)
+## 🔧 COM Port Problems (Windows)
 
-### Port herausfinden
+### Find the Port
 ```bash
-# Alle seriellen Ports anzeigen
+# List all serial ports
 pio device list
 
-# Geräte-Manager (Windows)
+# Device Manager (Windows)
 devmgmt.msc
 ```
 
-### Port in platformio.ini setzen
+### Set the Port in platformio.ini
 ```ini
 [env:esp32dev]
 monitor_port = COM3
 upload_port = COM3
 ```
 
-### Treiber-Probleme
+### Driver Problems
 - CP2102/CP2104: [Silicon Labs Drivers](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers)
 - CH340/CH341: [WCH Drivers](http://www.wch.cn/downloads/CH341SER_EXE.html)
 - FTDI: [FTDI Drivers](https://ftdichip.com/drivers/)
 
-## 📊 Monitor-Ausgaben
+## 📊 Monitor Output
 
-### Debug-Level einstellen
+### Set Debug Level
 ```ini
 # In platformio.ini
 build_flags = 
     -DCORE_DEBUG_LEVEL=3  ; 0=None, 1=Error, 2=Warn, 3=Info, 4=Debug, 5=Verbose
 ```
 
-### Log-Filter verwenden
+### Use Log Filters
 ```ini
 monitor_filters = 
-    esp32_exception_decoder  ; Stack-Traces entschlüsseln
-    time                     ; Zeitstempel hinzufügen
-    log2file                 ; In Datei speichern
+    esp32_exception_decoder  ; Decode stack traces
+    time                     ; Add timestamps
+    log2file                 ; Save to file
 ```
 
-## 🚨 Häufige Probleme
+## 🚨 Common Problems
 
 ### "Permission denied" (Linux/Mac)
 ```bash
-# Benutzer zur dialout Gruppe hinzufügen
+# Add user to the dialout group
 sudo usermod -a -G dialout $USER
-# Abmelden/Anmelden erforderlich
+# Log out and back in
 ```
 
 ### "Board not found"
 ```bash
-# USB-Kabel prüfen (muss Daten unterstützen)
-# Boot-Modus: BOOT-Taste gedrückt halten beim Einschalten
-# Reset-Taste drücken und loslassen
+# Check that the USB cable supports data
+# Boot mode: hold the BOOT button while powering on
+# Press and release the reset button
 ```
 
 ### "Library not found"
 ```bash
-# Bibliotheken neu installieren
+# Reinstall libraries
 pio lib install --force
 
-# Cache leeren
+# Clear cache
 pio system prune --cache
 ```
 
-### Memory-Probleme
+### Memory Problems
 ```ini
-# In platformio.ini größere Partition
+# Use a larger partition in platformio.ini
 board_build.partitions = huge_app.csv
 ```
 
-## 🔗 Dokumentation
+## 🔗 Documentation
 
 - **PlatformIO:** https://docs.platformio.org/
 - **ESP32 Arduino:** https://docs.espressif.com/projects/arduino-esp32/
@@ -223,4 +223,4 @@ board_build.partitions = huge_app.csv
 
 ---
 
-**Tipp:** Für die erste Verwendung empfiehlt sich die VS Code Extension, da sie eine grafische Oberfläche bietet und die meisten Befehle über Buttons verfügbar macht.
+**Tip:** The VS Code extension provides a graphical interface and makes most commands available as buttons.

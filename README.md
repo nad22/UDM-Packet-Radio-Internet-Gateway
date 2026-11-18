@@ -68,23 +68,23 @@ The **UDM Packet Radio Internet Gateway (PRIG)** is a ESP32-based solution that 
 - **EEPROM Persistence**: All settings stored in non-volatile memory
 - **CPU Frequency**: Performance optimization (240/160/80 MHz)
 - **Debug Levels**: Comprehensive logging with HEX dumps and protocol analysis
-- **Real-time Monitoring**: Live-Monitor mit erweiterten Debug-Informationen
+- **Real-time Monitoring**: Live monitor with detailed debug information
 
-### 🔄 OTA-System
-- **GitHub Integration**: Automatische Updates direkt von GitHub-Repository
-- **Version Management**: EEPROM-basierte Versionsverwaltung
-- **Configurable URLs**: Flexible Repository-Konfiguration
-- **Web-Interface Control**: Update-Steuerung über Web-Interface
+### 🔄 OTA Updates
+- **GitHub Integration**: Automatic updates directly from GitHub releases
+- **Version Management**: Only newer firmware versions are installed automatically
+- **Configurable URLs**: Configurable release repository
+- **Web Interface**: View the installed and latest release versions
 
 ---
 
 ## 📋 Installation
 
-### 🔌 Hardware-Reqirements
+### 🔌 Hardware Requirements
 
-- **ESP32 Development Board** (z.B. ESP32-WROOM-32)
+- **ESP32 Development Board** (e.g. ESP32-WROOM-32)
 - **OLED Display** (128x64, I2C)
-- **RS232 Interface** (MAX3232 oder ähnlich)
+- **RS232 Interface** (MAX3232 or similar)
 - **Packet Radio Modem** (TNC, etc.)
 
 
@@ -103,8 +103,8 @@ The **UDM Packet Radio Internet Gateway (PRIG)** is a ESP32-based solution that 
 
 <div align="center">
 
-**⭐ Wenn Ihnen dieses Projekt gefällt, geben Sie ihm einen Stern auf GitHub! ⭐**
+**⭐ If you like this project, give it a star on GitHub! ⭐**
 
-*Entwickelt mit ❤️ für die Packet Radio Community*
+*Developed with ❤️ for the packet radio community*
 
 </div>
